@@ -183,7 +183,7 @@ impl<'a> Map<'a> {
             let tile_bounds = GeoBounds::from_x_y_zoom(x, y, z);
             let (tile_rect, uv_rect) = bounds.uv_map(&tile_bounds);
 
-            visible_tiles.push((z, x, y, tile_rect, uv_rect));
+            visible_tiles.push((z, y, x, tile_rect, uv_rect));
         }
 
         // println!("Visible tiles: {:?}", visible_tiles);

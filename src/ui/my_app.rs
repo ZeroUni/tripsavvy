@@ -4,13 +4,15 @@ use serde::{Deserialize, Serialize};
 use tokio::runtime;
 use tokio::sync::mpsc;
 use std::collections::{HashMap, HashSet};
-use std::env;
+use std::{env, mem};
 use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::Poll;
 
-use crate::map::map_tile::MapTile;
+use crate::map;
+use crate::map::map_tile::{Coordinate, MapTile};
+use crate::map::map::Map;
 use crate::maps_api::tile_retriever::TileRetriever;
 
 #[derive(Deserialize, Serialize)]
@@ -27,7 +29,6 @@ pub struct MyApp {
     sender: mpsc::UnboundedSender<(u32, u32, u32, Result<MapTile, Box<dyn Error + Send + Sync>>)>,
     #[serde(skip)]
     runtime: tokio::runtime::Runtime,
-    zoom: u32, // WILL BE MOVED TO MAP WIDGET
 }
 
 impl Default for MyApp {
@@ -38,8 +39,7 @@ impl Default for MyApp {
             pending_tiles: HashSet::new(),
             receiver: mpsc::unbounded_channel().1,
             sender: mpsc::unbounded_channel().0,
-            runtime: tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("Unable to create runtime"),
-            zoom: 0,
+            runtime: tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("Unable to create runtime")
         }
     }
 }
@@ -71,49 +71,80 @@ impl eframe::App for MyApp {
             ..Default::default()
         };
 
-        egui::Window::new("Map")
+        // egui::Window::new("Map") // TODO: Replace window with map widget
+        //         .frame(frame)
+        //         .fixed_size(egui::vec2(1024.0, 1024.0))
+        //         .scroll([false, false])
+        //         .title_bar(false)
+        //         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        //         .show(ctx, |ui| {
+        //             ui.set_height(1024.0);
+        //             ui.set_width(1024.0);
+        //             let coords = (self.zoom, 0, 0);
+        //             if let Some(tile) = self.memory.get_mut(&coords) {
+        //                 ui.painter().image(tile.texture(ctx).id(), ui.max_rect(), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+        //             } else {
+        //                 ui.painter().rect_filled(ui.max_rect(), 0.0, Color32::from_gray(128));
+        //                 // Check if we need to fetch the tile, or are waiting for it
+        //                 if !self.pending_tiles.contains(&coords) && !self.memory.contains_key(&coords) {
+        //                     let sender = self.sender.clone();
+        //                     let tile_retriever = self.tile_retriever.clone();
+        //                     let (x, y, z) = coords;
+                
+        //                     self.runtime.spawn(async move {
+        //                         println!("Fetching tile ({}, {}, {})", x, y, z);
+        //                         let result = tile_retriever.fetch_tile(x, y, z).await
+        //                             .map_err(|e| -> Box<dyn Error + Send + Sync> {
+        //                                 Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+        //                             });
+        //                         sender.send((x, y, z, result)).unwrap();
+        //                     });
+                
+        //                     self.pending_tiles.insert(coords);
+        //                 }
+        //             }
+        //             let response = ui.response();
+        //             if let (true, 0.0) = (
+        //                 response.contains_pointer, 
+        //                 ui.input(|i| i.time_since_last_scroll()), 
+        //             ) { 
+        //                 // Get any scroll delta that may have occurred
+        //                 let scroll_delta = ui.input(|i| i.raw_scroll_delta.y);
+        //                 // If the scroll delta is not zero, update the zoom level (-1 or 1 steps based on direction)
+        //                 if scroll_delta != 0.0 {
+        //                     let change = if scroll_delta > 0.0 { 1 } else { -1 };
+        //                     self.zoom = (self.zoom as i32 + change).clamp(0, 20) as u32;
+        //                 }
+        //             }
+        //         });
+        egui::Window::new("Map") 
                 .frame(frame)
                 .fixed_size(egui::vec2(1024.0, 1024.0))
                 .scroll([false, false])
                 .title_bar(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    ui.set_height(1024.0);
-                    ui.set_width(1024.0);
-                    let coords = (self.zoom, 0, 0);
-                    if let Some(tile) = self.memory.get_mut(&coords) {
-                        ui.painter().image(tile.texture(ctx).id(), ui.max_rect(), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
-                    } else {
-                        ui.painter().rect_filled(ui.max_rect(), 0.0, Color32::from_gray(128));
+                    let mut missing_tiles = Vec::new();
+                    let map = Map::new("interactible_map", &mut self.memory, &mut missing_tiles).viewport_size(egui::vec2(1024.0, 1024.0));
+                    
+                    ui.add(map);
+                    
+                    for (z, x, y) in missing_tiles {
                         // Check if we need to fetch the tile, or are waiting for it
-                        if !self.pending_tiles.contains(&coords) && !self.memory.contains_key(&coords) {
+                        if !self.pending_tiles.contains(&(z, x, y)) && !self.memory.contains_key(&(z, x, y)) {
                             let sender = self.sender.clone();
                             let tile_retriever = self.tile_retriever.clone();
-                            let (x, y, z) = coords;
-                
+                            
                             self.runtime.spawn(async move {
                                 println!("Fetching tile ({}, {}, {})", x, y, z);
-                                let result = tile_retriever.fetch_tile(x, y, z).await
+                                let result = tile_retriever.fetch_tile(z, x, y).await
                                     .map_err(|e| -> Box<dyn Error + Send + Sync> {
                                         Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
                                     });
                                 sender.send((x, y, z, result)).unwrap();
                             });
-                
-                            self.pending_tiles.insert(coords);
-                        }
-                    }
-                    let response = ui.response();
-                    if let (true, 0.0) = (
-                        response.contains_pointer, 
-                        ui.input(|i| i.time_since_last_scroll()), 
-                    ) { 
-                        // Get any scroll delta that may have occurred
-                        let scroll_delta = ui.input(|i| i.raw_scroll_delta.y);
-                        // If the scroll delta is not zero, update the zoom level (-1 or 1 steps based on direction)
-                        if scroll_delta != 0.0 {
-                            let change = if scroll_delta > 0.0 { 1 } else { -1 };
-                            self.zoom = (self.zoom as i32 + change).clamp(0, 20) as u32;
+                            
+                            self.pending_tiles.insert((z, x, y));
                         }
                     }
                 });
@@ -148,7 +179,6 @@ impl MyApp {
             receiver,
             sender,
             runtime,
-            zoom: 0,
         }
     }
 

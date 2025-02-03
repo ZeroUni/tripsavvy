@@ -31,10 +31,14 @@ fn main() -> eframe::Result<()> {
         512,
     );
 
+    // Reset the map state
+    let mut map_state = map::map::MapState::default();
+
     eframe::run_native(
         "TripSavvy",
         native_options,
         Box::new(|cc| {
+            map_state.store(&cc.egui_ctx, egui::Id::new("interactible_map"));
             Ok(Box::new(ui::my_app::MyApp::new(cc, tile_retriever)))
         }),
     )

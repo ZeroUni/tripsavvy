@@ -12,14 +12,17 @@ pub struct TileRetriever {
     client: reqwest::Client,
     access_token: String,
     tile_size: u32,
+    #[serde(skip)]
+    ctx: egui::Context,
 }
 
 impl TileRetriever {
-    pub fn new(access_token: String, tile_size: u32) -> Self {
+    pub fn new(access_token: String, tile_size: u32, ctx: egui::Context) -> Self {
         Self {
             client: reqwest::Client::new(),
             access_token,
             tile_size,
+            ctx,
         }
     }
 
@@ -48,9 +51,18 @@ impl TileRetriever {
         let bytes = response.bytes().await?;
 
         // Decode the image using the image crate
-        // let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::WebP)?;
-        // let image_buffer = image.to_rgba8();
-        // let (width, height) = image_buffer.dimensions();
+        let image = image::load_from_memory(&bytes)?;
+        let image_buffer = image.to_rgba8();
+        let (width, height) = image_buffer.dimensions();
+
+        let texture = self.ctx.load_texture(
+            format!("{}-{}-{}_tile", zoom, x, y),
+            egui::ColorImage::from_rgba_unmultiplied(
+                [width as usize, height as usize],
+                &image_buffer.into_raw(),
+            ),
+            egui::TextureOptions::default(),
+        );
 
         // Compute geographical bounds from the tile coordinates
         let bounds = crate::map::map_tile::PixelBounds::from_x_y_zoom(x, y, zoom);
@@ -62,7 +74,7 @@ impl TileRetriever {
             zoom,
             egui::vec2(512.0, 512.0),
             bounds,
-            bytes.to_vec(),
+            texture,
         ))
     }
 }

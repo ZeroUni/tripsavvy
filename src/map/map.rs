@@ -54,11 +54,8 @@ impl<'a> Widget for Map<'a> {
             if let Some(current_pos) = response.hover_pos() {
                 if let Some(start_pos) = state.drag_start {
                     let delta = current_pos - start_pos;
-                    
-                    let zoom_factor = 2.0f32.powi(state.zoom.floor() as i32);
-                    let degrees_per_pixel = 360.0 / (zoom_factor * 512.0);
                     // longitude and latitude are not directly modifiable, so we create a Vec2 delta to add to the center
-                    state.drag_delta = Vec2::new(-delta.x * degrees_per_pixel, -delta.y * degrees_per_pixel);
+                    state.drag_delta = Vec2::new(-delta.x, -delta.y);
                     state.center = state.center.add_delta(state.drag_delta, state.zoom);
 
                     state.drag_start = Some(current_pos);
@@ -141,52 +138,37 @@ impl<'a> Map<'a> {
         //let mut visible_tiles = Vec::new();
         
         // Clamp zoom to valid range
-        let z = state.zoom.floor().max(0.0) as u32;
+        let fidelity_zoom = state.zoom + 1.0;
+        let z = fidelity_zoom.floor().max(0.0) as u32;
 
         // Get the geobounds of the viewport
         let bounds = PixelBounds::from_center(state.center.clone(), state.zoom);
 
         // For zoom 0, only one tile exists
-        if z == 0 {
-            // Only one tile to compare
-            // let tile_bounds = PixelBounds::from_x_y_zoom(0, 0, z);
-            // println!("Tile bounds: {:?}, Viewport bounds: {:?}", tile_bounds, bounds);
-            // let mut visible_tiles = Vec::new();
+        // if z == 0 {
+        //     let tiles = bounds.all_x_y_zoom(1.0_f32);
+        //     // println!("Bounds: {:?}, Tiles: {:?}, Zoom: {}", bounds, tiles, 1);
 
-            // let mapping_vec = bounds.uv_map(&tile_bounds);
-            // //println!("Mapping vec: {:?}", mapping_vec); 
-            
-            // for (tile_rect, uv_rect) in mapping_vec {
-            //     visible_tiles.push((0, 0, 0, tile_rect.clone(), uv_rect.clone()));
-            // }
-            // println!("Visible tiles: {:?}", visible_tiles);
+        //     let mut visible_tiles = Vec::new();
 
-            // return visible_tiles;
+        //     for (x, y) in tiles {
+        //         let tile_bounds = PixelBounds::from_x_y_zoom(x, y, 1);
+        //         let mapping_vec = bounds.uv_map(&tile_bounds);
 
-            // For clarity, lets use the zoom level 1 tiles (increased dpi)
-            let tiles = bounds.all_x_y_zoom(1.0_f32);
-            // println!("Bounds: {:?}, Tiles: {:?}, Zoom: {}", bounds, tiles, 1);
-
-            let mut visible_tiles = Vec::new();
-
-            for (x, y) in tiles {
-                let tile_bounds = PixelBounds::from_x_y_zoom(x, y, 1);
-                let mapping_vec = bounds.uv_map(&tile_bounds);
-
-                // println!("Tile {:?}, Bounds: {:?}, Mapping: {:?}", (x, y), tile_bounds, mapping_vec);
+        //         // println!("Tile {:?}, Bounds: {:?}, Mapping: {:?}", (x, y), tile_bounds, mapping_vec);
                 
-                for (tile_rect, uv_rect) in mapping_vec{
-                    visible_tiles.push((1, x, y, tile_rect, uv_rect));
-                }
-            }
+        //         for (tile_rect, uv_rect) in mapping_vec{
+        //             visible_tiles.push((1, x, y, tile_rect, uv_rect));
+        //         }
+        //     }
 
-            // println!("Visible tiles: {:?}", visible_tiles);
+        //     // println!("Visible tiles: {:?}", visible_tiles);
 
-            return visible_tiles;
-        }
+        //     return visible_tiles;
+        // }
     
         // Get the tile coordinates of the viewport
-        let tiles = bounds.all_x_y_zoom(state.zoom);
+        let tiles = bounds.all_x_y_zoom(fidelity_zoom); // +1 to increase image fidelity
         // println!("Bounds: {:?}, Tiles: {:?}, Zoom: {}", bounds, tiles, state.zoom);
 
         let mut visible_tiles = Vec::new();

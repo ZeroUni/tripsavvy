@@ -34,7 +34,7 @@ impl Default for MyApp {
     fn default() -> Self {
         Self {
             memory: LruCache::new(NonZeroU16::new(32).unwrap_or(NonZeroU16::MAX).into()),
-            tile_retriever: TileRetriever::new("".to_string(), 512),
+            tile_retriever: TileRetriever::new("".to_string(), 512, egui::Context::default()),
             pending_tiles: HashSet::new(),
             receiver: mpsc::unbounded_channel().1,
             sender: mpsc::unbounded_channel().0,
@@ -124,8 +124,8 @@ impl eframe::App for MyApp {
                 .title_bar(false)
                 .anchor(egui::Align2::CENTER_CENTER, [-480.0, 0.0])
                 .show(ctx, |ui| {
-                    // Add debug info
-                    ui.style_mut().debug.debug_on_hover = true;
+                    // Hide debug info
+                    ui.style_mut().debug.debug_on_hover = false;
 
                     let mut missing_tiles = Vec::new();
                     let map = Map::new("interactible_map", &mut self.memory, &mut missing_tiles).viewport_size(egui::vec2(780.0, 780.0));
@@ -138,6 +138,7 @@ impl eframe::App for MyApp {
                         if !self.pending_tiles.contains(&(z, x, y)) && !self.memory.contains(&(z, x, y)) {
                             let sender = self.sender.clone();
                             let tile_retriever = self.tile_retriever.clone();
+                            let requester = ctx.clone(); // Uses ARC so can be cloned to a new thread cheaply
                             
                             self.runtime.spawn(async move {
                                 println!("Fetching tile ({}, {}, {})", x, y, z);
@@ -146,6 +147,7 @@ impl eframe::App for MyApp {
                                         Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
                                     });
                                 sender.send((x, y, z, result)).unwrap();
+                                requester.request_repaint();
                             });
                             
                             self.pending_tiles.insert((z, x, y));
@@ -158,7 +160,7 @@ impl eframe::App for MyApp {
         while let Ok((x, y, z, result)) = self.receiver.try_recv() {
             match result {
                 Ok(tile) => {
-                    self.memory.put((x, y, z), tile);
+                    self.memory.put((z, x, y), tile);
                     println!("Fetched tile ({}, {}, {})", x, y, z);
                 }
                 Err(e) => {
@@ -175,7 +177,7 @@ impl MyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, tile_retriever: TileRetriever) -> Self {
         cc.egui_ctx.set_style(Self::get_dark_theme_style(&cc.egui_ctx));
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4) // Set max number of worker threads
+            .worker_threads(8) // Set max number of worker threads
             .thread_name("tile-fetcher")
             .thread_stack_size(3 * 1024 * 1024) // 3MB stack size
             .enable_all()

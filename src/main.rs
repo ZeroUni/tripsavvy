@@ -26,11 +26,6 @@ fn main() -> eframe::Result<()> {
 
     let key = dotenv::var("MAP_BOX_API_TOKEN").expect("MAP_BOX_API_TOKEN must be set");
 
-    let tile_retriever = tile_retriever::TileRetriever::new(
-        key.clone(),
-        512,
-    );
-
     // Reset the map state
     let mut map_state = map::map::MapState::default();
 
@@ -39,6 +34,11 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(|cc| {
             map_state.store(&cc.egui_ctx, egui::Id::new("interactible_map"));
+            let tile_retriever = tile_retriever::TileRetriever::new(
+                key.clone(),
+                512,
+                cc.egui_ctx.clone(),
+            );
             Ok(Box::new(ui::my_app::MyApp::new(cc, tile_retriever)))
         }),
     )

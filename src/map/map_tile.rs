@@ -142,7 +142,10 @@ impl GeoBounds {
         const BASE_LAT_SIZE: f64 = 170.1022; // ~85.0511 degrees north/south
 
         // Calculate size at target zoom
-        let size_factor = 2.0f64.powf(-zoom as f64);
+        // let size_factor = 2.0f64.powf(-zoom as f64);
+        // Lerp our size factor linearly between -zoom and -(zoom + 1)
+        let floor = zoom.floor() as i32;
+        let size_factor = egui::lerp(egui::Rangef::new(2.0_f32.powi(-(floor + 1)), 2.0_f32.powi(-floor)), zoom % zoom.floor()) as f64;
         let lon_size = BASE_LON_SIZE * size_factor;
         let lat_size = BASE_LAT_SIZE * size_factor;
 
@@ -531,7 +534,8 @@ impl PixelBounds {
     pub fn from_center(center: PixelCoordinate, zoom: f32) -> Self {
         /// Create a PixelBounds object from a center coordinate, zoom level, and scale factor
         let remainder = zoom - zoom.floor();
-        let len = egui::lerp(egui::Rangef::new(2.0_f32.powf(-(zoom + 1.0)), 2.0_f32.powf(-zoom)), 1.0 - remainder);
+        let z_int = zoom.floor() as i32;
+        let len = egui::lerp(egui::Rangef::new(2.0_f32.powi(-(z_int + 1)), 2.0_f32.powi(-z_int)), 1.0 - remainder);
         let half_len = (len / 2.0) as f64;
         let left = center.x() - half_len;
         let right = center.x() + half_len;
@@ -586,8 +590,6 @@ impl PixelBounds {
                     let x2 = other.right.min(cont_section.1);
                     let y1 = other.top.max(self.top);
                     let y2 = other.bottom.min(self.bottom);
-
-                    
 
                     if x2 > x1 && y2 > y1 {
                         // There is a meaningful intersection
@@ -891,43 +893,23 @@ pub struct MapTile {
     pub zoom: u32,
     pub image_size: egui::Vec2,  // In pixels
     pub bounds: PixelBounds,   // Geographical bounds
-    image_data: Vec<u8>,         // Raw image data
     #[serde(skip)]
     texture: Option<egui::TextureHandle>, // Has to be an option so it can be loaded lazily, without needing the app context
 }
 
 impl MapTile {
-    pub fn new(x: u32, y: u32, zoom: u32, image_size: egui::Vec2, bounds: PixelBounds, image_data: Vec<u8>) -> Self {
+    pub fn new(x: u32, y: u32, zoom: u32, image_size: egui::Vec2, bounds: PixelBounds, texture: egui::TextureHandle) -> Self {
         Self {
             x,
             y,
             zoom,
             image_size,
             bounds,
-            image_data,
-            texture: None,
+            texture: Some(texture),
         }
     }
 
     pub fn texture(&mut self, ctx: &egui::Context) -> &egui::TextureHandle {
-        if self.texture.is_none() {
-            // Decode WebP only when needed
-            let image = image::load_from_memory(&self.image_data)
-                .expect("Failed to decode image");
-            let image_buffer = image.to_rgba8();
-            
-            let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                [self.image_size.x as usize, self.image_size.y as usize],
-                &image_buffer.into_raw(),
-            );
-            let texture = ctx.load_texture(
-                format!("tile_{}_{}_zoom{}", self.x, self.y, self.zoom),
-                color_image,
-                egui::TextureOptions::default()
-            );
-            self.texture = Some(texture);
-            self.image_data.clear(); // Clear compressed data after texture is loaded
-        }
         self.texture.as_ref().unwrap()
     }
 }

@@ -1,15 +1,13 @@
 use eframe::egui;
+use egui::emath::Numeric;
 use egui::{frame, Color32, Margin, Style};
 use serde::{Deserialize, Serialize};
-use tokio::runtime;
 use tokio::sync::mpsc;
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU16;
 use std::{env, mem};
 use std::error::Error;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::Poll;
-
+use lru::LruCache;
 use crate::map;
 use crate::map::map_tile::{Coordinate, MapTile};
 use crate::map::map::Map;
@@ -19,7 +17,8 @@ use crate::maps_api::tile_retriever::TileRetriever;
 #[serde(default)]
 
 pub struct MyApp {
-    memory: HashMap<(u32, u32, u32), MapTile>,
+    #[serde(skip)]
+    memory: LruCache<(u32, u32, u32), MapTile>,
     tile_retriever: TileRetriever,
     #[serde(skip)]
     pending_tiles: HashSet<(u32, u32, u32)>,
@@ -34,7 +33,7 @@ pub struct MyApp {
 impl Default for MyApp {
     fn default() -> Self {
         Self {
-            memory: HashMap::new(),
+            memory: LruCache::new(NonZeroU16::new(32).unwrap_or(NonZeroU16::MAX).into()),
             tile_retriever: TileRetriever::new("".to_string(), 512),
             pending_tiles: HashSet::new(),
             receiver: mpsc::unbounded_channel().1,
@@ -117,21 +116,26 @@ impl eframe::App for MyApp {
         //                 }
         //             }
         //         });
+        let center = ctx.screen_rect().center();
         egui::Window::new("Map") 
                 .frame(frame)
                 .fixed_size(egui::vec2(1024.0, 1024.0))
                 .scroll([false, false])
                 .title_bar(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .anchor(egui::Align2::CENTER_CENTER, [-480.0, 0.0])
                 .show(ctx, |ui| {
+                    // Add debug info
+                    ui.style_mut().debug.debug_on_hover = true;
+
                     let mut missing_tiles = Vec::new();
-                    let map = Map::new("interactible_map", &mut self.memory, &mut missing_tiles).viewport_size(egui::vec2(1024.0, 1024.0));
+                    let map = Map::new("interactible_map", &mut self.memory, &mut missing_tiles).viewport_size(egui::vec2(780.0, 780.0));
                     
                     ui.add(map);
+
                     
                     for (z, x, y) in missing_tiles {
                         // Check if we need to fetch the tile, or are waiting for it
-                        if !self.pending_tiles.contains(&(z, x, y)) && !self.memory.contains_key(&(z, x, y)) {
+                        if !self.pending_tiles.contains(&(z, x, y)) && !self.memory.contains(&(z, x, y)) {
                             let sender = self.sender.clone();
                             let tile_retriever = self.tile_retriever.clone();
                             
@@ -154,7 +158,7 @@ impl eframe::App for MyApp {
         while let Ok((x, y, z, result)) = self.receiver.try_recv() {
             match result {
                 Ok(tile) => {
-                    self.memory.insert((x, y, z), tile);
+                    self.memory.put((x, y, z), tile);
                     println!("Fetched tile ({}, {}, {})", x, y, z);
                 }
                 Err(e) => {
@@ -170,10 +174,16 @@ impl eframe::App for MyApp {
 impl MyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, tile_retriever: TileRetriever) -> Self {
         cc.egui_ctx.set_style(Self::get_dark_theme_style(&cc.egui_ctx));
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("Unable to create runtime");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4) // Set max number of worker threads
+            .thread_name("tile-fetcher")
+            .thread_stack_size(3 * 1024 * 1024) // 3MB stack size
+            .enable_all()
+            .build()
+            .expect("Unable to create runtime");
         let (sender, receiver) = mpsc::unbounded_channel();
         Self {
-            memory: HashMap::new(),
+            memory: LruCache::new(NonZeroU16::new(64).unwrap_or(NonZeroU16::MAX).into()),
             tile_retriever,
             pending_tiles: HashSet::new(),
             receiver,

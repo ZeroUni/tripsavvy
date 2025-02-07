@@ -1,13 +1,14 @@
 use egui::epaint::{emath::lerp, vec2, Color32, Pos2, Rect, Shape, Stroke};
-use egui::{Response, Sense, Ui, Widget, WidgetInfo, WidgetType, Vec2, pos2};
+use egui::{pos2, Rangef, Response, Sense, Ui, Vec2, Widget, WidgetInfo, WidgetType};
 use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
+use lru::LruCache;
 
-use super::map_tile::{Coordinate, GeoBounds, MapTile};
+use super::map_tile::{Coordinate, GeoBounds, MapTile, PixelBounds, PixelCoordinate};
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct MapState {
-    center: Coordinate,
+    center: PixelCoordinate,
     zoom: f32,
     dragging: bool,
     drag_start: Option<Pos2>,
@@ -22,29 +23,11 @@ impl MapState {
     pub fn store(self, ctx: &egui::Context, id: egui::Id) {
         ctx.data_mut(|d| d.insert_persisted(id, self));
     }
-
-    fn update_center(&mut self, new_center: &Coordinate) {
-        // Clamp latitude to valid range (-85.05112878 to 85.05112878 are the limits
-        // of Web Mercator projection)
-        let lat = new_center.latitude()
-            .clamp(-85.05112878, 85.05112878);
-            
-        // Normalize longitude to -180 to 180 range
-        let mut lon = new_center.longitude();
-        while lon > 180.0 {
-            lon -= 360.0;
-        }
-        while lon < -180.0 {
-            lon += 360.0;
-        }
-
-        self.center = Coordinate::new(lat, lon);
-    }
 }
 
 pub struct Map<'a> {
     id: egui::Id,
-    tile_cache: &'a mut HashMap<(u32, u32, u32), MapTile>,
+    tile_cache: &'a mut LruCache<(u32, u32, u32), MapTile>,
     viewport_size: Vec2,
     missing_tiles: &'a mut Vec<(u32, u32, u32)>,
 }
@@ -75,9 +58,8 @@ impl<'a> Widget for Map<'a> {
                     let zoom_factor = 2.0f32.powi(state.zoom.floor() as i32);
                     let degrees_per_pixel = 360.0 / (zoom_factor * 512.0);
                     // longitude and latitude are not directly modifiable, so we create a Vec2 delta to add to the center
-                    state.drag_delta = Vec2::new(-delta.x * degrees_per_pixel, delta.y * degrees_per_pixel);
-                    let new_center = state.center.clone() + state.drag_delta;
-                    state.update_center(&new_center);
+                    state.drag_delta = Vec2::new(-delta.x * degrees_per_pixel, -delta.y * degrees_per_pixel);
+                    state.center = state.center.add_delta(state.drag_delta, state.zoom);
 
                     state.drag_start = Some(current_pos);
                 }
@@ -87,15 +69,18 @@ impl<'a> Widget for Map<'a> {
             state.drag_start = None;
         }
 
+        let mut zoomed = false;
         // Handle zoom for pinch / touch
-        let zoom_delta = ui.input(|i| i.zoom_delta());
-        if (zoom_delta - 1.0).abs() > f32::EPSILON {
-            state.zoom = (state.zoom * zoom_delta).clamp(1.0, 20.0);
+        let zoom_delta = ui.input(|i| i.zoom_delta()) - 1.0;
+        if zoom_delta.abs() > f32::EPSILON {
+            let zoom_new = lerp(Rangef::new(0.0, 1.0), zoom_delta.abs()) * zoom_delta.signum();
+            state.zoom = (state.zoom + zoom_new).clamp(0.0, 20.0);
+            zoomed = true;
         }
 
         // Handle zoom for scroll
         let mut scroll = ui.input(|i| i.smooth_scroll_delta).y;
-        if (scroll - 0.0).abs() > f32::EPSILON {
+        if (scroll - 0.0).abs() > f32::EPSILON && !zoomed {
             // Normalize scroll further using tanh
             scroll = (scroll / 10.0).tanh();
             state.zoom = (state.zoom + scroll).clamp(0.0, 20.0);
@@ -130,11 +115,6 @@ impl<'a> Widget for Map<'a> {
             }
         }
 
-        // If we detect the user input ctrl + 'c', we reset the map state
-        if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C)) {
-            state = MapState::default();
-        }
-
         // Store updated state
         state.store(ui.ctx(), self.id);
 
@@ -143,7 +123,7 @@ impl<'a> Widget for Map<'a> {
 }
 
 impl<'a> Map<'a> {
-    pub fn new(id_source: impl std::hash::Hash, tile_cache: &'a mut HashMap<(u32, u32, u32), MapTile>, missing_tiles: &'a mut Vec<(u32, u32, u32)>) -> Self {
+    pub fn new(id_source: impl std::hash::Hash, tile_cache: &'a mut LruCache<(u32, u32, u32), MapTile>, missing_tiles: &'a mut Vec<(u32, u32, u32)>) -> Self {
         Self {
             id: egui::Id::new(id_source),
             tile_cache,
@@ -162,28 +142,61 @@ impl<'a> Map<'a> {
         
         // Clamp zoom to valid range
         let z = state.zoom.floor().max(0.0) as u32;
-        let scale = 2.0f32.powf(state.zoom - z as f32);
-        
+
+        // Get the geobounds of the viewport
+        let bounds = PixelBounds::from_center(state.center.clone(), state.zoom);
+
         // For zoom 0, only one tile exists
         if z == 0 {
-            let uv_rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-            return vec![(0, 0, 0, uv_rect, uv_rect)];
+            // Only one tile to compare
+            // let tile_bounds = PixelBounds::from_x_y_zoom(0, 0, z);
+            // println!("Tile bounds: {:?}, Viewport bounds: {:?}", tile_bounds, bounds);
+            // let mut visible_tiles = Vec::new();
+
+            // let mapping_vec = bounds.uv_map(&tile_bounds);
+            // //println!("Mapping vec: {:?}", mapping_vec); 
+            
+            // for (tile_rect, uv_rect) in mapping_vec {
+            //     visible_tiles.push((0, 0, 0, tile_rect.clone(), uv_rect.clone()));
+            // }
+            // println!("Visible tiles: {:?}", visible_tiles);
+
+            // return visible_tiles;
+
+            // For clarity, lets use the zoom level 1 tiles (increased dpi)
+            let tiles = bounds.all_x_y_zoom(1.0_f32);
+            // println!("Bounds: {:?}, Tiles: {:?}, Zoom: {}", bounds, tiles, 1);
+
+            let mut visible_tiles = Vec::new();
+
+            for (x, y) in tiles {
+                let tile_bounds = PixelBounds::from_x_y_zoom(x, y, 1);
+                let mapping_vec = bounds.uv_map(&tile_bounds);
+
+                // println!("Tile {:?}, Bounds: {:?}, Mapping: {:?}", (x, y), tile_bounds, mapping_vec);
+                
+                for (tile_rect, uv_rect) in mapping_vec{
+                    visible_tiles.push((1, x, y, tile_rect, uv_rect));
+                }
+            }
+
+            // println!("Visible tiles: {:?}", visible_tiles);
+
+            return visible_tiles;
         }
     
-        // Get the geobounds of the viewport
-        let bounds = GeoBounds::from_center(state.center.clone(), state.zoom, 512.0);
-
         // Get the tile coordinates of the viewport
         let tiles = bounds.all_x_y_zoom(state.zoom);
-        //println!("Bounds: {:?}, Tiles: {:?}, Zoom: {}", bounds, tiles, state.zoom);
+        // println!("Bounds: {:?}, Tiles: {:?}, Zoom: {}", bounds, tiles, state.zoom);
 
         let mut visible_tiles = Vec::new();
 
         for (x, y) in tiles {
-            let tile_bounds = GeoBounds::from_x_y_zoom(x, y, z);
-            let (tile_rect, uv_rect) = bounds.uv_map(&tile_bounds);
-
-            visible_tiles.push((z, y, x, tile_rect, uv_rect));
+            let tile_bounds = PixelBounds::from_x_y_zoom(x, y, z);
+            
+            for (tile_rect, uv_rect) in bounds.uv_map(&tile_bounds) {
+                visible_tiles.push((z, x, y, tile_rect, uv_rect));
+            }
         }
 
         // println!("Visible tiles: {:?}", visible_tiles);

@@ -9,6 +9,7 @@
 ## File system
 .DS_Store
 desktop.ini
+debug.txt
 
 ## Editor
 *.swp
@@ -30,6 +31,7 @@ Session.vim
 ## Tool
 .valgrindrc
 .cargo
+*.svg
 # Included because it is part of the test case
 !/tests/run-make/thumb-none-qemu/example/.cargo
 

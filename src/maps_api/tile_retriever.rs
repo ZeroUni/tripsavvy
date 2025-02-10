@@ -77,4 +77,34 @@ impl TileRetriever {
             texture,
         ))
     }
+
+    pub async fn fetch_vector_tile(
+        &self,
+        zoom: u32,
+        x: u32,
+        y: u32,
+    ) -> Result<bool, Box<dyn Error>> {
+        // Construct the URL using Mapbox's Vector Tiles API
+        let url = format!(
+            "https://tiles.openfreemap.org/planet/stable/{}/{}/{}.pbf",
+            zoom, x, y
+        );
+        println!("Fetching vector tile from {}", url);
+
+        // Fetch the image data
+        let response = self.client.get(&url).send().await?;
+
+        // If the response is not successful, return an error
+        if !response.status().is_success() {
+            return Err(format!("Failed to fetch tile: {}", response.status()).into());
+        }
+
+        let bytes = response.bytes().await?;
+
+        Ok(true)
+    }
+}
+
+fn parse_vector_tile(data: Vec<u8>) -> Result<(), Box<dyn Error>> {
+    Ok(())
 }

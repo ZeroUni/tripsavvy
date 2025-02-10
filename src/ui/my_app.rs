@@ -135,7 +135,7 @@ impl eframe::App for MyApp {
                     
                     for (z, x, y) in missing_tiles {
                         // Check if we need to fetch the tile, or are waiting for it
-                        if !self.pending_tiles.contains(&(z, x, y)) && !self.memory.contains(&(z, x, y)) {
+                        if !self.pending_tiles.contains(&(z, x, y)) && self.memory.peek(&(z, x, y)).is_none() {
                             let sender = self.sender.clone();
                             let tile_retriever = self.tile_retriever.clone();
                             let requester = ctx.clone(); // Uses ARC so can be cloned to a new thread cheaply

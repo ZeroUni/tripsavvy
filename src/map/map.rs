@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use lru::LruCache;
 
-use super::map_tile::{Coordinate, GeoBounds, MapTile, PixelBounds, PixelCoordinate};
+use super::map_tile::{Coordinate, MapTile, PixelBounds, PixelCoordinate};
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct MapState {
@@ -13,6 +13,7 @@ pub struct MapState {
     dragging: bool,
     drag_start: Option<Pos2>,
     drag_delta: Vec2,
+    cached_view: Vec<(u32, u32, u32, Rect, Rect)>,
 }
 
 impl MapState {
@@ -33,7 +34,7 @@ pub struct Map<'a> {
 }
 
 impl<'a> Widget for Map<'a> {
-    fn ui(self, ui: &mut Ui) -> Response {
+    fn ui(mut self, ui: &mut Ui) -> Response {
         let mut state = MapState::load(ui.ctx(), self.id);
 
         let (rect, response) = ui.allocate_exact_size(
@@ -44,7 +45,7 @@ impl<'a> Widget for Map<'a> {
         ui.painter().rect(rect, 0.0, Color32::from_rgb(100, 0, 100), Stroke::new(1.0, Color32::WHITE));
 
         let map_painter = ui.painter().with_clip_rect(rect);
-
+        let mut modified = false;
         // Handle interactions
         if response.dragged() {
             if !state.dragging {
@@ -61,6 +62,7 @@ impl<'a> Widget for Map<'a> {
                     state.drag_start = Some(current_pos);
                 }
             }
+            modified = true;
         } else if state.dragging {
             state.dragging = false;
             state.drag_start = None;
@@ -73,6 +75,7 @@ impl<'a> Widget for Map<'a> {
             let zoom_new = lerp(Rangef::new(0.0, 1.0), zoom_delta.abs()) * zoom_delta.signum();
             state.zoom = (state.zoom + zoom_new).clamp(0.0, 20.0);
             zoomed = true;
+            modified = true;
         }
 
         // Handle zoom for scroll
@@ -81,12 +84,15 @@ impl<'a> Widget for Map<'a> {
             // Normalize scroll further using tanh
             scroll = (scroll / 10.0).tanh();
             state.zoom = (state.zoom + scroll).clamp(0.0, 20.0);
+            modified = true;
         }
 
-        // Calculate and paint visible tiles
-        let visible_tiles = self.calculate_visible_tiles(rect, &state);
-        
-        for (z, x, y, tile_map, uv) in visible_tiles {
+        // If modified, update the view
+        if modified || state.cached_view.is_empty() {
+            state.cached_view = self.calculate_visible_tiles(rect, &state);
+        }
+
+        for (z, x, y, tile_map, uv) in &state.cached_view {
             let tile_rect = Rect::from_min_max(
                 Pos2 {
                     x: rect.min.x + tile_map.min.x * rect.width(),
@@ -97,19 +103,24 @@ impl<'a> Widget for Map<'a> {
                     y: rect.min.y + tile_map.max.y * rect.height(),
                 }
             );
-            if let Some(tile) = self.tile_cache.get_mut(&(z, x, y)) {
+            if let Some(tile) = self.tile_cache.get_mut(&(*z, *x, *y)) {
                 let texture = tile.texture(ui.ctx());
                 
                 map_painter.image(
                     texture.id(),
                     tile_rect,
-                    uv,
+                    *uv,
                     Color32::WHITE
                 );
             } else {
-                self.missing_tiles.push((z, x, y));
-                map_painter.rect_filled(tile_rect, 0.0, Color32::GRAY);
-            }
+                self.missing_tiles.push((*z, *x, *y));
+                // Try to fetch the tile "above" it
+                if let Some(shape) = self.fetch_parent_tile(*z, *x, *y, 3, ui, tile_rect, uv) {
+                    map_painter.add(shape);
+                } else {
+                    map_painter.rect_filled(tile_rect, 0.0, Color32::GRAY);
+                }
+                }
         }
 
         // Store updated state
@@ -143,29 +154,6 @@ impl<'a> Map<'a> {
 
         // Get the geobounds of the viewport
         let bounds = PixelBounds::from_center(state.center.clone(), state.zoom);
-
-        // For zoom 0, only one tile exists
-        // if z == 0 {
-        //     let tiles = bounds.all_x_y_zoom(1.0_f32);
-        //     // println!("Bounds: {:?}, Tiles: {:?}, Zoom: {}", bounds, tiles, 1);
-
-        //     let mut visible_tiles = Vec::new();
-
-        //     for (x, y) in tiles {
-        //         let tile_bounds = PixelBounds::from_x_y_zoom(x, y, 1);
-        //         let mapping_vec = bounds.uv_map(&tile_bounds);
-
-        //         // println!("Tile {:?}, Bounds: {:?}, Mapping: {:?}", (x, y), tile_bounds, mapping_vec);
-                
-        //         for (tile_rect, uv_rect) in mapping_vec{
-        //             visible_tiles.push((1, x, y, tile_rect, uv_rect));
-        //         }
-        //     }
-
-        //     // println!("Visible tiles: {:?}", visible_tiles);
-
-        //     return visible_tiles;
-        // }
     
         // Get the tile coordinates of the viewport
         let tiles = bounds.all_x_y_zoom(fidelity_zoom); // +1 to increase image fidelity
@@ -185,5 +173,36 @@ impl<'a> Map<'a> {
         
         // Return nothing for now
         return visible_tiles;
+    }
+
+    fn fetch_parent_tile(&mut self, z: u32, x: u32, y: u32, depth: u32, ui: &Ui, tile_rect: Rect, uv: &Rect) -> Option<Shape> {
+        if z <= 1 || depth == 0 {
+            return None;
+        }
+
+        let parent_z = z - 1;
+        let parent_x = x / 2;
+        let parent_y = y / 2;
+
+        if let Some(tile) = self.tile_cache.get(&(parent_z, parent_x, parent_y)) {
+            let texture = tile.texture(ui.ctx());
+            let uv_x = (x % 2) as f32 / 2.0;
+            let uv_y = (y % 2) as f32 / 2.0;
+            
+            let uv = Rect::from_min_max(
+                Pos2::new(uv.min.x / 2.0 + uv_x, uv.min.y / 2.0 + uv_y),
+                Pos2::new(uv.max.x / 2.0 + uv_x, uv.max.y / 2.0 + uv_y),
+            );
+
+            Some(Shape::image(
+                texture.id(),
+                tile_rect,
+                uv,
+                Color32::WHITE
+            ))
+        } else {
+            // Try the next parent level recursively
+            self.fetch_parent_tile(parent_z, parent_x, parent_y, depth - 1, ui, tile_rect, uv)
+        }
     }
 }

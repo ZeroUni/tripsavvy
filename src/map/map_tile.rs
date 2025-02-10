@@ -909,7 +909,7 @@ impl MapTile {
         }
     }
 
-    pub fn texture(&mut self, ctx: &egui::Context) -> &egui::TextureHandle {
+    pub fn texture(&self, ctx: &egui::Context) -> &egui::TextureHandle {
         self.texture.as_ref().unwrap()
     }
 }

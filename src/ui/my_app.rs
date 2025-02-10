@@ -33,7 +33,7 @@ pub struct MyApp {
 impl Default for MyApp {
     fn default() -> Self {
         Self {
-            memory: LruCache::new(NonZeroU16::new(32).unwrap_or(NonZeroU16::MAX).into()),
+            memory: LruCache::new(NonZeroU16::new(512).unwrap_or(NonZeroU16::MAX).into()),
             tile_retriever: TileRetriever::new("".to_string(), 512, egui::Context::default()),
             pending_tiles: HashSet::new(),
             receiver: mpsc::unbounded_channel().1,
@@ -185,7 +185,7 @@ impl MyApp {
             .expect("Unable to create runtime");
         let (sender, receiver) = mpsc::unbounded_channel();
         Self {
-            memory: LruCache::new(NonZeroU16::new(64).unwrap_or(NonZeroU16::MAX).into()),
+            memory: LruCache::new(NonZeroU16::new(512).unwrap_or(NonZeroU16::MAX).into()),
             tile_retriever,
             pending_tiles: HashSet::new(),
             receiver,

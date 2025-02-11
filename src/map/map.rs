@@ -104,10 +104,9 @@ impl<'a> Widget for Map<'a> {
                 }
             );
             if let Some(tile) = self.tile_cache.get_mut(&(*z, *x, *y)) {
-                let texture = tile.texture(ui.ctx());
                 
                 map_painter.image(
-                    texture.id(),
+                    tile.texture().clone(),
                     tile_rect,
                     *uv,
                     Color32::WHITE
@@ -185,7 +184,6 @@ impl<'a> Map<'a> {
         let parent_y = y / 2;
 
         if let Some(tile) = self.tile_cache.get(&(parent_z, parent_x, parent_y)) {
-            let texture = tile.texture(ui.ctx());
             let uv_x = (x % 2) as f32 / 2.0;
             let uv_y = (y % 2) as f32 / 2.0;
             
@@ -195,7 +193,7 @@ impl<'a> Map<'a> {
             );
 
             Some(Shape::image(
-                texture.id(),
+                tile.texture().clone(),
                 tile_rect,
                 uv,
                 Color32::WHITE

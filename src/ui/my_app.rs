@@ -11,7 +11,8 @@ use lru::LruCache;
 use crate::map;
 use crate::map::map_tile::{Coordinate, MapTile};
 use crate::map::map::Map;
-use crate::maps_api::tile_retriever::TileRetriever;
+use crate::map::vector_tile::VectorTile;
+use crate::maps_api::tile_retriever::{TileRetriever, TileType};
 
 #[derive(Deserialize, Serialize)]
 #[serde(default)]
@@ -19,13 +20,15 @@ use crate::maps_api::tile_retriever::TileRetriever;
 pub struct MyApp {
     #[serde(skip)]
     memory: LruCache<(u32, u32, u32), MapTile>,
+    #[serde(skip)]
+    memory_overlay: LruCache<(u32, u32, u32), VectorTile>,
     tile_retriever: TileRetriever,
     #[serde(skip)]
     pending_tiles: HashSet<(u32, u32, u32)>,
     #[serde(skip)]
-    receiver: mpsc::UnboundedReceiver<(u32, u32, u32, Result<MapTile, Box<dyn Error + Send + Sync>>)>,
+    receiver: mpsc::UnboundedReceiver<(u32, u32, u32, Result<TileType, Box<dyn Error + Send + Sync>>)>,
     #[serde(skip)]
-    sender: mpsc::UnboundedSender<(u32, u32, u32, Result<MapTile, Box<dyn Error + Send + Sync>>)>,
+    sender: mpsc::UnboundedSender<(u32, u32, u32, Result<TileType, Box<dyn Error + Send + Sync>>)>,
     #[serde(skip)]
     runtime: tokio::runtime::Runtime,
 }
@@ -34,6 +37,7 @@ impl Default for MyApp {
     fn default() -> Self {
         Self {
             memory: LruCache::new(NonZeroU16::new(512).unwrap_or(NonZeroU16::MAX).into()),
+            memory_overlay: LruCache::new(NonZeroU16::new(512).unwrap_or(NonZeroU16::MAX).into()),
             tile_retriever: TileRetriever::new("".to_string(), 512, egui::Context::default()),
             pending_tiles: HashSet::new(),
             receiver: mpsc::unbounded_channel().1,
@@ -139,6 +143,10 @@ impl eframe::App for MyApp {
                             let sender = self.sender.clone();
                             let tile_retriever = self.tile_retriever.clone();
                             let requester = ctx.clone(); // Uses ARC so can be cloned to a new thread cheaply
+
+                            // TEMP add a secondary fetcher for vector tiles
+                            let vector_retriever = tile_retriever.clone();
+                            let vector_sender = self.sender.clone();
                             
                             self.runtime.spawn(async move {
                                 println!("Fetching tile ({}, {}, {})", x, y, z);
@@ -148,6 +156,15 @@ impl eframe::App for MyApp {
                                     });
                                 sender.send((x, y, z, result)).unwrap();
                                 requester.request_repaint();
+                            });
+
+                            self.runtime.spawn( async move {
+                                let result = vector_retriever.fetch_vector_tile(z, x, y).await
+                                    .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                    });
+
+                                vector_sender.send((x, y, z, result)).unwrap();
                             });
                             
                             self.pending_tiles.insert((z, x, y));
@@ -160,14 +177,20 @@ impl eframe::App for MyApp {
         while let Ok((x, y, z, result)) = self.receiver.try_recv() {
             match result {
                 Ok(tile) => {
-                    self.memory.put((z, x, y), tile);
-                    println!("Fetched tile ({}, {}, {})", x, y, z);
+                    match tile {
+                        TileType::Raster(texture) => {
+                            self.memory.put((z, x, y), texture);
+                            self.pending_tiles.remove(&(z, x, y));
+                        }
+                        TileType::Vector(vector_tile) => {
+                            self.memory_overlay.put((z, x, y), vector_tile);
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("Error fetching tile ({}, {}, {}): {}", x, y, z, e);
                 }
             }
-            self.pending_tiles.remove(&(x, y, z));
         }
         
     }
@@ -186,6 +209,7 @@ impl MyApp {
         let (sender, receiver) = mpsc::unbounded_channel();
         Self {
             memory: LruCache::new(NonZeroU16::new(512).unwrap_or(NonZeroU16::MAX).into()),
+            memory_overlay: LruCache::new(NonZeroU16::new(512).unwrap_or(NonZeroU16::MAX).into()),
             tile_retriever,
             pending_tiles: HashSet::new(),
             receiver,

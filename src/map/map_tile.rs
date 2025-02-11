@@ -894,23 +894,23 @@ pub struct MapTile {
     pub image_size: egui::Vec2,  // In pixels
     pub bounds: PixelBounds,   // Geographical bounds
     #[serde(skip)]
-    texture: Option<egui::TextureHandle>, // Has to be an option so it can be loaded lazily, without needing the app context
+    texture: Option<egui::TextureHandle>, // literally dies if not an Option
 }
 
 impl MapTile {
-    pub fn new(x: u32, y: u32, zoom: u32, image_size: egui::Vec2, bounds: PixelBounds, texture: egui::TextureHandle) -> Self {
+    pub fn new(x: u32, y: u32, zoom: u32, image_size: egui::Vec2, bounds: PixelBounds, texture: &egui::TextureHandle) -> Self {
         Self {
             x,
             y,
             zoom,
             image_size,
             bounds,
-            texture: Some(texture),
+            texture: Some(texture.to_owned()),
         }
     }
 
-    pub fn texture(&self, ctx: &egui::Context) -> &egui::TextureHandle {
-        self.texture.as_ref().unwrap()
+    pub fn texture(&self) -> egui::TextureId {
+        self.texture.as_ref().unwrap().id()
     }
 }
 

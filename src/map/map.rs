@@ -1,8 +1,11 @@
 use egui::epaint::{emath::lerp, vec2, Color32, Pos2, Rect, Shape, Stroke};
-use egui::{pos2, Rangef, Response, Sense, Ui, Vec2, Widget, WidgetInfo, WidgetType};
+use egui::text::LayoutJob;
+use egui::{pos2, Galley, Rangef, Response, Sense, Ui, Vec2, Widget, WidgetInfo, WidgetType};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use lru::LruCache;
+use rstar::{RTree, RTreeObject, AABB};
 
 use super::map_tile::{Coordinate, MapTile, PixelBounds, PixelCoordinate};
 use super::vector_tile::{FeatureValue, VectorTile};
@@ -24,6 +27,143 @@ impl MapState {
 
     pub fn store(self, ctx: &egui::Context, id: egui::Id) {
         ctx.data_mut(|d| d.insert_persisted(id, self));
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LabelPoint {
+    position: Pos2,
+    text: String,
+    layout: Arc<Galley>,
+    dimensions: Vec2,  
+    importance: f32,   
+}
+
+impl LabelPoint {
+    fn overlaps(&self, other: &LabelPoint) -> bool {
+        // Create bounding boxes for both labels
+        let self_rect = Rect::from_min_size(
+            self.position,
+            self.dimensions
+        );
+        let other_rect = Rect::from_min_size(
+            other.position,
+            other.dimensions
+        );
+        
+        self_rect.intersects(other_rect)
+    }
+
+    fn adjust_position(&mut self, other: &LabelPoint, minimum_distance: f32) {
+        // Push away based on overlap vector
+        let delta = (self.position - other.position).normalized();
+        let push_strength = minimum_distance * 0.5;
+        
+        // If self is less important, it moves more
+        let importance_ratio = other.importance / (self.importance + other.importance);
+        self.position += delta * push_strength * importance_ratio;
+    }
+}
+
+impl PartialEq for LabelPoint {
+    fn eq(&self, other: &Self) -> bool {
+        self.position == other.position
+    }
+}
+
+// impl rstar::Point for LabelPoint {
+//     type Scalar = f32;
+    
+//     const DIMENSIONS: usize = 2;
+        
+//     fn nth(&self, index: usize) -> Self::Scalar {
+//         match index {
+//             0 => self.position.x,
+//             1 => self.position.y,
+//             _ => panic!("Invalid index"),
+//         }
+//     }
+
+//     fn generate(mut generator: impl FnMut(usize) -> Self::Scalar) -> Self
+//     {
+//         !unimplemented!("This is not needed for our use case")
+//     }
+    
+//     fn nth_mut(&mut self, index: usize) -> &mut Self::Scalar {
+//         match index {
+//             0 => &mut self.position.x,
+//             1 => &mut self.position.y,
+//             _ => panic!("Invalid index"),
+//         }
+//     }
+// }
+
+impl rstar::RTreeObject for LabelPoint {
+    type Envelope = AABB<[f32; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        // Create an AABB that encompasses the entire label rectangle
+        let min_x = self.position.x;
+        let min_y = self.position.y;
+        let max_x = min_x + self.dimensions.x;
+        let max_y = min_y + self.dimensions.y;
+        
+        AABB::from_corners([min_x, min_y], [max_x, max_y])
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LabelManager {
+    tree: RTree<LabelPoint>,
+    minimum_distance: f32,
+}
+
+impl LabelManager {
+    pub fn new(minimum_distance: f32) -> Self {
+        Self {
+            tree: RTree::new(),
+            minimum_distance,
+        }
+    }
+
+    pub fn add_label(&mut self, mut label: LabelPoint) {
+        // Check nearby labels within search radius
+        let label_envelope = label.envelope();
+        let search_area = AABB::from_corners(
+            [
+                label_envelope.lower()[0] - self.minimum_distance,
+                label_envelope.lower()[1] - self.minimum_distance
+            ],
+            [
+                label_envelope.upper()[0] + self.minimum_distance,
+                label_envelope.upper()[1] + self.minimum_distance
+            ]
+        );
+        
+        let nearby: Vec<_> = self.tree.locate_in_envelope(&search_area).collect();
+        
+        let mut needs_adjustment = true;
+        let max_iterations = 5;
+        let mut iterations = 0;
+        
+        while needs_adjustment && iterations < max_iterations {
+            needs_adjustment = false;
+            
+            for other in &nearby {
+                if label.overlaps(other) {
+                    label.adjust_position(other, self.minimum_distance);
+                    needs_adjustment = true;
+                }
+            }
+            
+            iterations += 1;
+        }
+        
+        // Only add if we found a good position
+        if !needs_adjustment || iterations < max_iterations {
+            self.tree.insert(label);
+        }
+
     }
 }
 
@@ -126,8 +266,9 @@ impl<'a> Widget for Map<'a> {
 
         // Render overlay
         let view = PixelBounds::from_center(state.center.clone(), state.zoom);
+        let mut label_manager = LabelManager::new(20.0); 
         for (z, x, y, _, _) in &state.cached_view {
-            let (x, y, z) = (*x, *y, *z);
+            let (x, y, z) = (*x, *y, (*z).min(14)); // Our vector tiles only go up to zoom level 14
             if let Some(tile) = self.vector_tile_cache.get(&(z, x, y)) {
                 let boundaries = PixelBounds::from_x_y_zoom(x, y, z);
                 for layer in &tile.layers {
@@ -162,14 +303,22 @@ impl<'a> Widget for Map<'a> {
                                                                 let dynamic_font = egui::FontId::proportional(
                                                                     17.0 - (feature.get_name().len() as f32 / 16.0).clamp(1.0, 12.0)
                                                                 );
-                                                                map_painter.text(
-                                                                    paint_point,
-                                                                    egui::Align2::CENTER_CENTER,
-                                                                    name.as_string().unwrap(),
+                                                                let layout = map_painter.layout(
+                                                                    feature.get_name_lang("en").to_string(),
                                                                     dynamic_font,
-                                                                    Color32::WHITE
+                                                                    Color32::WHITE,
+                                                                    f32::MAX
                                                                 );
-
+                                                                let size = layout.size();
+                                                                let label = LabelPoint {
+                                                                    position: paint_point - size / 2.0,
+                                                                    text: feature.get_name_lang("en").to_string(),
+                                                                    layout,
+                                                                    dimensions: size,
+                                                                    importance: 1.0,
+                                                                };
+                                                                
+                                                                label_manager.add_label(label);
                                                             }
                                                         }
                                                     }
@@ -189,6 +338,15 @@ impl<'a> Widget for Map<'a> {
                 }
             }
         }
+        // Render all non-overlapping labels
+        for label in label_manager.tree.iter() {
+            map_painter.galley(
+                label.position,
+                label.layout.clone(),
+                Color32::WHITE
+            );
+        }
+        
 
         // Store updated state
         state.store(ui.ctx(), self.id);

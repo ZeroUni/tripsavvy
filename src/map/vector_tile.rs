@@ -29,6 +29,14 @@ impl VectorFeature {
         }
     }
 
+    pub fn get_name_lang(&self, lang: &str) -> &str {
+        let key = format!("name:{}", lang);
+        match self.properties.get(&key) {
+            Some(FeatureValue::String(name)) => name,
+            _ => self.get_name(),
+        }
+    }
+
     pub fn get_rank(&self) -> i32 {
         match self.properties.get("rank") {
             Some(FeatureValue::Sint(rank)) => *rank,
@@ -54,6 +62,41 @@ impl VectorLayer {
         }
         lowest_rank
     }
+
+    pub fn get_highest_rank(&self) -> i32 {
+        let mut highest_rank = i32::MIN;
+        for feature in &self.features {
+            let rank = feature.get_rank();
+            if rank > highest_rank {
+                highest_rank = rank;
+            }
+        }
+        highest_rank
+    }
+
+    pub fn get_low_high_rank(&self) -> (i32, i32) {
+        let mut lowest_rank = i32::MAX;
+        let mut highest_rank = i32::MIN;
+        for feature in &self.features {
+            let rank = feature.get_rank();
+            if rank < lowest_rank {
+                lowest_rank = rank;
+            }
+            if rank > highest_rank {
+                highest_rank = rank;
+            }
+        }
+        (lowest_rank, highest_rank)
+    }
+
+    pub fn get_feature_by_name(&self, name: &str) -> Option<&VectorFeature> {
+        for feature in &self.features {
+            if feature.get_name() == name {
+                return Some(feature);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +109,10 @@ impl VectorTile {
         Self {
             layers: Vec::new(),
         }
+    }
+
+    pub fn get_all_layer_names(&self) -> Vec<&str> {
+        self.layers.iter().map(|layer| layer.name.as_str()).collect()
     }
 }
 

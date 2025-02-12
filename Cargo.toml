@@ -18,6 +18,6 @@ image = { version = "0.25.5", features = ["webp"] }
 lru = "0.13.0"
 protobuf = "3.7.1"
 reqwest = "0.12.12"
+rstar = { version = "0.12.2", features = ["debug", "serde"] }
 serde = "1.0.217"
-tokio = { version = "1.43.0", features = ["rt-multi-thread"] }
-tracing = "0.1.41"
+tokio = { version = "1.43.0", features = ["full", "rt-multi-thread", "test-util"] }

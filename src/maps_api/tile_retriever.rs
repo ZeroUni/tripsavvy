@@ -328,3 +328,52 @@ fn convert_value(value: &Value) -> FeatureValue {
         _ => FeatureValue::String("".to_string()), // Default case
     }
 }
+
+
+// Tests
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_coords() {
+        assert_eq!(normalize_coords(0, 0, 4096.0), (0.0, 0.0));
+        assert_eq!(normalize_coords(2048, 2048, 4096.0), (0.5, 0.5));
+        assert_eq!(normalize_coords(4096, 4096, 4096.0), (1.0, 1.0));
+    }
+
+    #[test]
+    fn test_convert_value() {
+        let value = Value {
+            string_value: Some("string".to_string()),
+            float_value: Some(1.0),
+            double_value: Some(2.0),
+            int_value: Some(3),
+            uint_value: Some(4),
+            sint_value: Some(5),
+            bool_value: Some(true),
+        };
+
+        assert_eq!(
+            convert_value(&value),
+            FeatureValue::String("string".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_vector_tile() {
+        let ctx = egui::Context::default();
+        let tile_retriever = TileRetriever::new("your_test_token".to_string(), 512, ctx);
+        
+        let result = tile_retriever.fetch_vector_tile(14, 8375, 5500).await;
+        assert!(result.is_ok(), "Failed to fetch vector tile: {:?}", result.err());
+        
+        if let Ok(TileType::Vector(vector_tile)) = result {
+            assert!(!vector_tile.layers.is_empty(), "Vector tile should contain layers");
+            let layer_names = vector_tile.get_all_layer_names();
+            println!("Layer names: {:?}", layer_names);
+        } else {
+            panic!("Expected Vector tile type");
+        }
+    }
+}

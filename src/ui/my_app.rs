@@ -147,6 +147,7 @@ impl eframe::App for MyApp {
                             // TEMP add a secondary fetcher for vector tiles
                             let vector_retriever = tile_retriever.clone();
                             let vector_sender = self.sender.clone();
+                            let vector_requester = requester.clone();
                             
                             self.runtime.spawn(async move {
                                 println!("Fetching tile ({}, {}, {})", x, y, z);
@@ -165,6 +166,7 @@ impl eframe::App for MyApp {
                                     });
 
                                 vector_sender.send((x, y, z, result)).unwrap();
+                                vector_requester.request_repaint();
                             });
                             
                             self.pending_tiles.insert((z, x, y));

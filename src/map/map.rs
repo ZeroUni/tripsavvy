@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use lru::LruCache;
 
 use super::map_tile::{Coordinate, MapTile, PixelBounds, PixelCoordinate};
+use super::vector_tile::{FeatureValue, VectorTile};
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct MapState {
@@ -29,6 +30,7 @@ impl MapState {
 pub struct Map<'a> {
     id: egui::Id,
     tile_cache: &'a mut LruCache<(u32, u32, u32), MapTile>,
+    vector_tile_cache: &'a mut LruCache<(u32, u32, u32), VectorTile>,
     viewport_size: Vec2,
     missing_tiles: &'a mut Vec<(u32, u32, u32)>,
 }
@@ -119,7 +121,73 @@ impl<'a> Widget for Map<'a> {
                 } else {
                     map_painter.rect_filled(tile_rect, 0.0, Color32::GRAY);
                 }
+            }
+        }
+
+        // Render overlay
+        let view = PixelBounds::from_center(state.center.clone(), state.zoom);
+        for (z, x, y, _, _) in &state.cached_view {
+            let (x, y, z) = (*x, *y, *z);
+            if let Some(tile) = self.vector_tile_cache.get(&(z, x, y)) {
+                let boundaries = PixelBounds::from_x_y_zoom(x, y, z);
+                for layer in &tile.layers {
+                    let lowest_rank = layer.get_lowest_rank();
+                    if layer.name.eq("place") {
+                        for feature in &layer.features {
+                            match feature.geometry_type {
+                                crate::map::vector_tile::GeometryType::Point => {
+                                    // Convert the relative coordinates to pixel coordinates
+                                    let coordinates = feature.coordinates.iter().map(|c| {
+                                        let temp_coord = c.first().unwrap();
+                                        let pixel_x = boundaries.left() + (boundaries.width()) * temp_coord.0 as f64;
+                                        let pixel_y = boundaries.top() + (boundaries.height()) * temp_coord.1 as f64;
+                                        PixelCoordinate::new(pixel_x, pixel_y)                                
+                                    }).collect::<Vec<PixelCoordinate>>();
+                                    // Draw the first point with its name:en 
+                                    if let Some(projected_point) = view.project_point(coordinates.first().unwrap()) {
+                                        if let Some(name) = feature.properties.get("name:en") {
+                                            if let Some(class) = feature.properties.get("class") {
+                                                match class.as_string() {
+                                                    Some(s) => {
+                                                        match s.as_str() {
+                                                            _ => {
+                                                                if feature.get_rank() > lowest_rank {
+                                                                    continue;
+                                                                }
+                                                                let paint_point = pos2(
+                                                                    rect.min.x + projected_point.x() as f32 * rect.width(),
+                                                                    rect.min.y + projected_point.y() as f32 * rect.height()
+                                                                    );
+                                                                // Calculate font size based on zoom level, rank, and text length
+                                                                let dynamic_font = egui::FontId::proportional(
+                                                                    17.0 - (feature.get_name().len() as f32 / 16.0).clamp(1.0, 12.0)
+                                                                );
+                                                                map_painter.text(
+                                                                    paint_point,
+                                                                    egui::Align2::CENTER_CENTER,
+                                                                    name.as_string().unwrap(),
+                                                                    dynamic_font,
+                                                                    Color32::WHITE
+                                                                );
+
+                                                            }
+                                                        }
+                                                    }
+                                                    None => {}
+                                                }
+                                            }
+                                        }    
+                                    }
+                                }
+                                crate::map::vector_tile::GeometryType::Line => {
+                                }
+                                crate::map::vector_tile::GeometryType::Polygon => {
+                                }
+                            }
+                        }    
+                    }
                 }
+            }
         }
 
         // Store updated state
@@ -130,12 +198,23 @@ impl<'a> Widget for Map<'a> {
 }
 
 impl<'a> Map<'a> {
-    pub fn new(id_source: impl std::hash::Hash, tile_cache: &'a mut LruCache<(u32, u32, u32), MapTile>, missing_tiles: &'a mut Vec<(u32, u32, u32)>) -> Self {
+    pub fn new(id_source: impl std::hash::Hash, tile_cache: &'a mut LruCache<(u32, u32, u32), MapTile>, vector_tile_cache: &'a mut LruCache<(u32, u32, u32), VectorTile>, missing_tiles: &'a mut Vec<(u32, u32, u32)>) -> Self {
         Self {
             id: egui::Id::new(id_source),
             tile_cache,
+            vector_tile_cache,
             viewport_size: Vec2::new(1024.0, 1024.0),
-            missing_tiles: missing_tiles,
+            missing_tiles,
+        }
+    }
+
+    pub fn with_viewport(id_source: impl std::hash::Hash, tile_cache: &'a mut LruCache<(u32, u32, u32), MapTile>, vector_tile_cache: &'a mut LruCache<(u32, u32, u32), VectorTile>, missing_tiles: &'a mut Vec<(u32, u32, u32)>, viewport_size: Vec2) -> Self {
+        Self {
+            id: egui::Id::new(id_source),
+            tile_cache,
+            vector_tile_cache,
+            viewport_size,
+            missing_tiles,
         }
     }
 

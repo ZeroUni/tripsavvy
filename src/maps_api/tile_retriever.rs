@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::io::Cursor;
 use geozero::mvt::tile::{Feature, GeomType, Layer, Value};
-use geozero::mvt::{Message, Tile};
+use geozero::mvt::{Message, Tile, TileValue};
 use reqwest;
 use egui;
 use image::{self, codecs::webp};
@@ -12,7 +12,7 @@ use flate2::read::GzDecoder;
 use std::io::Read;
 
 use crate::map::map_tile::MapTile;
-use crate::map::vector_tile::{GeometryType, VectorFeature, VectorLayer, VectorTile};
+use crate::map::vector_tile::{FeatureValue, GeometryType, VectorFeature, VectorLayer, VectorTile};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TileRetriever {
@@ -113,11 +113,9 @@ impl TileRetriever {
         let decompressed_bytes: Vec<u8> = { // Decompression block
             if response.headers().get("Content-Encoding").map_or(false, |header| header == "gzip") {
                 let bytes = response.bytes().await?; // Read response bytes
-                println!("Response is gzip encoded, decompressing...");
                 decompress_gzip(&bytes)? // Decompress if gzip encoded
             } else {
                 let bytes = response.bytes().await?; // Read response bytes
-                println!("Response is not gzip encoded.");
                 bytes.to_vec() // Use bytes directly if not gzip
             }
         };
@@ -136,6 +134,9 @@ fn parse_vector_tile(data: Vec<u8>) -> Result<TileType, Box<dyn Error>> {
         let vector_layer = parse_layer(layer)?; // Parse each layer
         vector_tile.layers.push(vector_layer); // Add parsed layer to VectorTile
     }
+
+    // For debugging purposes, write the vector tile as debug to a local file debug.txt
+    // std::fs::write("debug/debug.txt", format!("{:#?}", vector_tile)).expect("Unable to write file");
 
     Ok(TileType::Vector(vector_tile))
 }
@@ -164,7 +165,6 @@ fn parse_feature(feature: &Feature, extent: u32, layer: &Layer) -> Result<Vector
     };
 
     let mut coordinates: Vec<Vec<(f32, f32)>> = Vec::new();
-    let mut current_path: Vec<(f32, f32)> = Vec::new();
     
     // Create a geometry processor
     struct GeomProcessor {
@@ -182,6 +182,56 @@ fn parse_feature(feature: &Feature, extent: u32, layer: &Layer) -> Result<Vector
 
         fn point_begin(&mut self, _idx: usize) -> Result<(), geozero::error::GeozeroError> {
             self.current_path.clear();
+            Ok(())
+        }
+
+        fn empty_point(&mut self, idx: usize) -> geozero::error::Result<()> {
+            self.current_path.push((0.0, 0.0));
+            Ok(())
+        }
+
+        fn multipoint_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+            self.current_path.clear();
+            Ok(())
+        }
+
+        fn multipoint_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+            self.coordinates.push(self.current_path.clone());
+            Ok(())
+        }
+
+        fn coordinate(
+                &mut self,
+                x: f64,
+                y: f64,
+                z: Option<f64>,
+                m: Option<f64>,
+                t: Option<f64>,
+                tm: Option<u64>,
+                idx: usize,
+            ) -> geozero::error::Result<()> {
+                let (nx, ny) = normalize_coords(x as i64, y as i64, self.extent);
+                self.current_path.push((nx, ny));
+                Ok(())
+        }
+
+        fn multicurve_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+            self.current_path.clear();
+            Ok(())
+        }
+
+        fn multicurve_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+            self.coordinates.push(self.current_path.clone());
+            Ok(())
+        }
+
+        fn curvepolygon_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+            self.current_path.clear();
+            Ok(())
+        }
+
+        fn curvepolygon_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+            self.coordinates.push(self.current_path.clone());
             Ok(())
         }
 
@@ -228,7 +278,7 @@ fn parse_feature(feature: &Feature, extent: u32, layer: &Layer) -> Result<Vector
         if let [key_idx, value_idx] = chunk {
             if let Some(key) = layer.keys.get(*key_idx as usize) {
                 if let Some(value) = layer.values.get(*value_idx as usize) {
-                    properties.insert(key.to_string(), value.string_value().to_string());
+                    properties.insert(key.to_string(), convert_value(value));
                 }
             }
         }
@@ -255,4 +305,26 @@ fn decompress_gzip(compressed_bytes: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     let mut decompressed_bytes = Vec::new();
     decoder.read_to_end(&mut decompressed_bytes)?;
     Ok(decompressed_bytes)
+}
+
+fn convert_value(value: &Value) -> FeatureValue {
+    // Convert geozero Value to FeatureValue using a match matrix
+    match (
+        value.string_value.as_ref(),
+        value.float_value,
+        value.double_value,
+        value.int_value,
+        value.uint_value,
+        value.sint_value,
+        value.bool_value,
+    ) {
+        (Some(s), _, _, _, _, _, _) => FeatureValue::String(s.to_string()),
+        (_, Some(f), _, _, _, _, _) => FeatureValue::Float(f),
+        (_, _, Some(d), _, _, _, _) => FeatureValue::Double(d),
+        (_, _, _, Some(i), _, _, _) => FeatureValue::Int(i as i32),
+        (_, _, _, _, Some(u), _, _) => FeatureValue::Uint(u as u32),
+        (_, _, _, _, _, Some(s), _) => FeatureValue::Sint(s as i32),
+        (_, _, _, _, _, _, Some(b)) => FeatureValue::Bool(b),
+        _ => FeatureValue::String("".to_string()), // Default case
+    }
 }

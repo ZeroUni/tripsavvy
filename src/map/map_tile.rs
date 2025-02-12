@@ -463,6 +463,28 @@ impl PixelBounds {
         })
     }
 
+    pub fn contains_point(&self, point: &PixelCoordinate) -> bool {
+        /// Check if the point is contained within this bounds, taking wrapping into account
+        match self.wrapping() {
+            (false, false) => {
+                // Normal case
+                point.x() >= self.left && point.x() <= self.right && point.y() >= self.top && point.y() <= self.bottom
+            },
+            (true, false) => {
+                // Horizontal wrapping
+                (point.x() >= self.left || point.x() <= self.right) && point.y() >= self.top && point.y() <= self.bottom
+            },
+            (false, true) => {
+                // Vertical wrapping
+                point.x() >= self.left && point.x() <= self.right && (point.y() >= self.top || point.y() <= self.bottom)
+            },
+            (true, true) => {
+                // Both wrapping
+                (point.x() >= self.left || point.x() <= self.right) && (point.y() >= self.top || point.y() <= self.bottom)
+            },
+        }
+    }
+
     pub fn intersects(&self, other: &PixelBounds) -> bool {
         /// Check if the other bounds intersect with this bounds, taking wrapping into account
         match self.wrapping() {
@@ -789,6 +811,57 @@ impl PixelBounds {
     pub fn wrapping(&self) -> (bool, bool) {
         ((self.right - self.left) < f64::EPSILON, (self.bottom - self.top) < f64::EPSILON)
     }
+
+    pub fn project_point(&self, point: &PixelCoordinate) -> Option<PixelCoordinate> {
+        /// Project a point in normal space to this space, if it is contained within the bounds
+        if self.contains_point(point) {
+            // Calculate the relative position of the point in the bounds
+            match self.wrapping() {
+                (false, false) => {
+                    // Normal case
+                    let x = (point.x() - self.left) / self.width();
+                    let y = (point.y() - self.top) / self.height();
+                    Some(PixelCoordinate::new(x, y))
+                },
+                (true, false) => {
+                    // Horizontal wrapping
+                    let x = if point.x() < self.left {
+                        (point.x() + 1.0 - self.left) / self.width()
+                    } else {
+                        (point.x() - self.left) / self.width()
+                    };
+                    let y = (point.y() - self.top) / self.height();
+                    Some(PixelCoordinate::new(x, y))
+                },
+                (false, true) => {
+                    // Vertical wrapping
+                    let x = (point.x() - self.left) / self.width();
+                    let y = if point.y() < self.top {
+                        (point.y() + 1.0 - self.top) / self.height()
+                    } else {
+                        (point.y() - self.top) / self.height()
+                    };
+                    Some(PixelCoordinate::new(x, y))
+                },
+                (true, true) => {
+                    // Both wrapping
+                    let x = if point.x() < self.left {
+                        (point.x() + 1.0 - self.left) / self.width()
+                    } else {
+                        (point.x() - self.left) / self.width()
+                    };
+                    let y = if point.y() < self.top {
+                        (point.y() + 1.0 - self.top) / self.height()
+                    } else {
+                        (point.y() - self.top) / self.height()
+                    };
+                    Some(PixelCoordinate::new(x, y))
+                },
+            }
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -809,10 +882,19 @@ impl Default for PixelCoordinate {
 
 impl PixelCoordinate {
     pub fn new(x: f64, y: f64) -> Self {
-        // Return the values modulo 1.0 to ensure they are in the range [0, 1]
+        // Ensure the values are in the range [0, 1]
+        let normalize = |x: f64| {
+            if x > 1.0 {
+                x - x.floor()
+            } else if x < 0.0 {
+                x - x.ceil() + 1.0
+            } else {
+                x
+            }
+        };
         Self {
-            x: x.rem_euclid(1.0),
-            y: y.rem_euclid(1.0),
+            x: normalize(x),
+            y: normalize(y),
         }
     }
 

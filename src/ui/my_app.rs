@@ -132,7 +132,7 @@ impl eframe::App for MyApp {
                     ui.style_mut().debug.debug_on_hover = false;
 
                     let mut missing_tiles = Vec::new();
-                    let map = Map::new("interactible_map", &mut self.memory, &mut missing_tiles).viewport_size(egui::vec2(780.0, 780.0));
+                    let map = Map::new("interactible_map", &mut self.memory, &mut self.memory_overlay, &mut missing_tiles).viewport_size(egui::vec2(780.0, 780.0));
                     
                     ui.add(map);
 

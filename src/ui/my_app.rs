@@ -2,9 +2,11 @@ use eframe::egui;
 use egui::emath::Numeric;
 use egui::{frame, Color32, Margin, Style};
 use serde::{Deserialize, Serialize};
+use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU16;
+use std::sync::Arc;
 use std::{env, mem};
 use std::error::Error;
 use lru::LruCache;
@@ -30,7 +32,7 @@ pub struct MyApp {
     #[serde(skip)]
     sender: mpsc::UnboundedSender<(u32, u32, u32, Result<TileType, Box<dyn Error + Send + Sync>>)>,
     #[serde(skip)]
-    runtime: tokio::runtime::Runtime,
+    runtime: Arc<tokio::runtime::Runtime>,
 }
 
 impl Default for MyApp {
@@ -42,7 +44,7 @@ impl Default for MyApp {
             pending_tiles: HashSet::new(),
             receiver: mpsc::unbounded_channel().1,
             sender: mpsc::unbounded_channel().0,
-            runtime: tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("Unable to create runtime")
+            runtime: Arc::new(Builder::new_multi_thread().enable_all().build().expect("Unable to create runtime"))
         }
     }
 }
@@ -132,7 +134,7 @@ impl eframe::App for MyApp {
                     ui.style_mut().debug.debug_on_hover = false;
 
                     let mut missing_tiles = Vec::new();
-                    let map = Map::new("interactible_map", &mut self.memory, &mut self.memory_overlay, &mut missing_tiles).viewport_size(egui::vec2(780.0, 780.0));
+                    let map = Map::new("interactible_map", &mut self.memory, &mut self.memory_overlay, &mut missing_tiles, self.runtime.clone()).viewport_size(egui::vec2(780.0, 780.0));
                     
                     ui.add(map);
 
@@ -201,13 +203,13 @@ impl eframe::App for MyApp {
 impl MyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, tile_retriever: TileRetriever) -> Self {
         cc.egui_ctx.set_style(Self::get_dark_theme_style(&cc.egui_ctx));
-        let runtime = tokio::runtime::Builder::new_multi_thread()
+        let runtime = Arc::new(Builder::new_multi_thread()
             .worker_threads(8) // Set max number of worker threads
             .thread_name("tile-fetcher")
             .thread_stack_size(3 * 1024 * 1024) // 3MB stack size
             .enable_all()
             .build()
-            .expect("Unable to create runtime");
+            .expect("Unable to create runtime"));
         let (sender, receiver) = mpsc::unbounded_channel();
         Self {
             memory: LruCache::new(NonZeroU16::new(512).unwrap_or(NonZeroU16::MAX).into()),

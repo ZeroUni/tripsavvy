@@ -1,6 +1,9 @@
 use egui::epaint::{emath::lerp, vec2, Color32, Pos2, Rect, Shape, Stroke};
 use egui::text::LayoutJob;
 use egui::{pos2, Galley, Rangef, Response, Sense, Ui, Vec2, Widget, WidgetInfo, WidgetType};
+use futures::future::join_all;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
@@ -8,7 +11,7 @@ use lru::LruCache;
 use rstar::{RTree, RTreeObject, AABB};
 
 use super::map_tile::{Coordinate, MapTile, PixelBounds, PixelCoordinate};
-use super::vector_tile::{FeatureValue, VectorTile};
+use super::vector_tile::{FeatureValue, VectorFeature, VectorTile};
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct MapState {
@@ -59,9 +62,15 @@ impl LabelPoint {
         let delta = (self.position - other.position).normalized();
         let push_strength = minimum_distance * 0.5;
         
-        // If self is less important, it moves more
-        let importance_ratio = other.importance / (self.importance + other.importance);
-        self.position += delta * push_strength * importance_ratio;
+        // Calculate importance ratio, ensuring equal movement for equal importance
+        let self_move_ratio = if self.importance == other.importance {
+            0.5 // Equal movement for equal importance
+        } else {
+            other.importance / (self.importance + other.importance)
+        };
+
+        // Move self away from other
+        self.position += delta * push_strength * self_move_ratio;
     }
 }
 
@@ -70,33 +79,6 @@ impl PartialEq for LabelPoint {
         self.position == other.position
     }
 }
-
-// impl rstar::Point for LabelPoint {
-//     type Scalar = f32;
-    
-//     const DIMENSIONS: usize = 2;
-        
-//     fn nth(&self, index: usize) -> Self::Scalar {
-//         match index {
-//             0 => self.position.x,
-//             1 => self.position.y,
-//             _ => panic!("Invalid index"),
-//         }
-//     }
-
-//     fn generate(mut generator: impl FnMut(usize) -> Self::Scalar) -> Self
-//     {
-//         !unimplemented!("This is not needed for our use case")
-//     }
-    
-//     fn nth_mut(&mut self, index: usize) -> &mut Self::Scalar {
-//         match index {
-//             0 => &mut self.position.x,
-//             1 => &mut self.position.y,
-//             _ => panic!("Invalid index"),
-//         }
-//     }
-// }
 
 impl rstar::RTreeObject for LabelPoint {
     type Envelope = AABB<[f32; 2]>;
@@ -127,6 +109,10 @@ impl LabelManager {
     }
 
     pub fn add_label(&mut self, mut label: LabelPoint) {
+        // If a label with the same name already exists, skip
+        if self.tree.iter().any(|l| l.text == label.text) {
+            return;
+        }
         // Check nearby labels within search radius
         let label_envelope = label.envelope();
         let search_area = AABB::from_corners(
@@ -173,6 +159,7 @@ pub struct Map<'a> {
     vector_tile_cache: &'a mut LruCache<(u32, u32, u32), VectorTile>,
     viewport_size: Vec2,
     missing_tiles: &'a mut Vec<(u32, u32, u32)>,
+    runtime: Arc<tokio::runtime::Runtime>,
 }
 
 impl<'a> Widget for Map<'a> {
@@ -266,86 +253,81 @@ impl<'a> Widget for Map<'a> {
 
         // Render overlay
         let view = PixelBounds::from_center(state.center.clone(), state.zoom);
-        let mut label_manager = LabelManager::new(20.0); 
-        for (z, x, y, _, _) in &state.cached_view {
-            let (x, y, z) = (*x, *y, (*z).min(14)); // Our vector tiles only go up to zoom level 14
-            if let Some(tile) = self.vector_tile_cache.get(&(z, x, y)) {
-                let boundaries = PixelBounds::from_x_y_zoom(x, y, z);
-                for layer in &tile.layers {
-                    let lowest_rank = layer.get_lowest_rank();
-                    if layer.name.eq("place") {
-                        for feature in &layer.features {
-                            match feature.geometry_type {
-                                crate::map::vector_tile::GeometryType::Point => {
-                                    // Convert the relative coordinates to pixel coordinates
-                                    let coordinates = feature.coordinates.iter().map(|c| {
-                                        let temp_coord = c.first().unwrap();
-                                        let pixel_x = boundaries.left() + (boundaries.width()) * temp_coord.0 as f64;
-                                        let pixel_y = boundaries.top() + (boundaries.height()) * temp_coord.1 as f64;
-                                        PixelCoordinate::new(pixel_x, pixel_y)                                
-                                    }).collect::<Vec<PixelCoordinate>>();
-                                    // Draw the first point with its name:en 
-                                    if let Some(projected_point) = view.project_point(coordinates.first().unwrap()) {
-                                        if let Some(name) = feature.properties.get("name:en") {
-                                            if let Some(class) = feature.properties.get("class") {
-                                                match class.as_string() {
-                                                    Some(s) => {
-                                                        match s.as_str() {
-                                                            _ => {
-                                                                if feature.get_rank() > lowest_rank {
-                                                                    continue;
-                                                                }
-                                                                let paint_point = pos2(
-                                                                    rect.min.x + projected_point.x() as f32 * rect.width(),
-                                                                    rect.min.y + projected_point.y() as f32 * rect.height()
-                                                                    );
-                                                                // Calculate font size based on zoom level, rank, and text length
-                                                                let dynamic_font = egui::FontId::proportional(
-                                                                    17.0 - (feature.get_name().len() as f32 / 16.0).clamp(1.0, 12.0)
-                                                                );
-                                                                let layout = map_painter.layout(
-                                                                    feature.get_name_lang("en").to_string(),
-                                                                    dynamic_font,
-                                                                    Color32::WHITE,
-                                                                    f32::MAX
-                                                                );
-                                                                let size = layout.size();
-                                                                let label = LabelPoint {
-                                                                    position: paint_point - size / 2.0,
-                                                                    text: feature.get_name_lang("en").to_string(),
-                                                                    layout,
-                                                                    dimensions: size,
-                                                                    importance: 1.0,
-                                                                };
-                                                                
-                                                                label_manager.add_label(label);
-                                                            }
-                                                        }
-                                                    }
-                                                    None => {}
-                                                }
-                                            }
-                                        }    
-                                    }
-                                }
-                                crate::map::vector_tile::GeometryType::Line => {
-                                }
-                                crate::map::vector_tile::GeometryType::Polygon => {
-                                }
-                            }
-                        }    
-                    }
-                }
-            }
-        }
-        // Render all non-overlapping labels
-        for label in label_manager.tree.iter() {
-            map_painter.galley(
-                label.position,
-                label.layout.clone(),
-                Color32::WHITE
-            );
-        }
+        let ref_painter = Arc::new(map_painter);
+        let rendered_overlays = self.render_overlay(ui, rect, &view, ref_painter);
+        //self.paint_overlay(ui, rect, rendered_overlays);
+
+        // for (z, x, y, _, _) in &state.cached_view {
+        //     if let Some((tile, coords)) = self.get_vector_tile(*z, *x, *y) {
+        //         let (z, x, y) = coords;
+        //         let boundaries = PixelBounds::from_x_y_zoom(x, y, z);
+        //         for layer in tile.iter_layers() {
+        //             let lowest_rank = layer.get_lowest_rank();
+        //             if layer.name.eq("place") {
+        //                 for feature in &layer.features {
+        //                     match feature.geometry_type {
+        //                         crate::map::vector_tile::GeometryType::Point => {
+        //                             // Convert the relative coordinates to pixel coordinates
+        //                             let coordinates = feature.coordinates.iter().map(|c| {
+        //                                 let temp_coord = c.first().unwrap();
+        //                                 let pixel_x = boundaries.left() + (boundaries.width()) * temp_coord.0 as f64;
+        //                                 let pixel_y = boundaries.top() + (boundaries.height()) * temp_coord.1 as f64;
+        //                                 PixelCoordinate::new(pixel_x, pixel_y)                                
+        //                             }).collect::<Vec<PixelCoordinate>>();
+        //                             // Draw the first point with its name:en 
+        //                             if let Some(projected_point) = view.project_point(coordinates.first().unwrap()) {
+        //                                 if let Some(name) = feature.properties.get("name:en") {
+        //                                     if let Some(class) = feature.properties.get("class") {
+        //                                         match class.as_string() {
+        //                                             Some(s) => {
+        //                                                 match s.as_str() {
+        //                                                     _ => {
+        //                                                         if feature.get_rank() > lowest_rank {
+        //                                                             continue;
+        //                                                         }
+        //                                                         let paint_point = pos2(
+        //                                                             rect.min.x + projected_point.x() as f32 * rect.width(),
+        //                                                             rect.min.y + projected_point.y() as f32 * rect.height()
+        //                                                             );
+        //                                                         // Calculate font size based on zoom level, rank, and text length
+        //                                                         let dynamic_font = egui::FontId::proportional(
+        //                                                             17.0 - (feature.get_name().len() as f32 / 16.0).clamp(1.0, 12.0)
+        //                                                         );
+        //                                                         let layout = map_painter.layout(
+        //                                                             feature.get_name_lang("en").to_string(),
+        //                                                             dynamic_font,
+        //                                                             Color32::WHITE,
+        //                                                             f32::MAX
+        //                                                         );
+        //                                                         let size = layout.size();
+        //                                                         let label = LabelPoint {
+        //                                                             position: paint_point - size / 2.0,
+        //                                                             text: feature.get_name_lang("en").to_string(),
+        //                                                             layout,
+        //                                                             dimensions: size,
+        //                                                             importance: 1.0,
+        //                                                         };                                    
+        //                                                         label_manager.add_label(label);
+        //                                                     }
+        //                                                 }
+        //                                             }
+        //                                             None => {}
+        //                                         }
+        //                                     }
+        //                                 }    
+        //                             }
+        //                         }
+        //                         crate::map::vector_tile::GeometryType::Line => {
+        //                         }
+        //                         crate::map::vector_tile::GeometryType::Polygon => {
+        //                         }
+        //                     }
+        //                 }    
+        //             }
+        //         }
+        //     }
+        // }
+        // // Render all non-overlapping labels
         
 
         // Store updated state
@@ -356,23 +338,25 @@ impl<'a> Widget for Map<'a> {
 }
 
 impl<'a> Map<'a> {
-    pub fn new(id_source: impl std::hash::Hash, tile_cache: &'a mut LruCache<(u32, u32, u32), MapTile>, vector_tile_cache: &'a mut LruCache<(u32, u32, u32), VectorTile>, missing_tiles: &'a mut Vec<(u32, u32, u32)>) -> Self {
+    pub fn new(id_source: impl std::hash::Hash, tile_cache: &'a mut LruCache<(u32, u32, u32), MapTile>, vector_tile_cache: &'a mut LruCache<(u32, u32, u32), VectorTile>, missing_tiles: &'a mut Vec<(u32, u32, u32)>, runtime: Arc<tokio::runtime::Runtime>) -> Self {
         Self {
             id: egui::Id::new(id_source),
             tile_cache,
             vector_tile_cache,
             viewport_size: Vec2::new(1024.0, 1024.0),
             missing_tiles,
+            runtime,
         }
     }
 
-    pub fn with_viewport(id_source: impl std::hash::Hash, tile_cache: &'a mut LruCache<(u32, u32, u32), MapTile>, vector_tile_cache: &'a mut LruCache<(u32, u32, u32), VectorTile>, missing_tiles: &'a mut Vec<(u32, u32, u32)>, viewport_size: Vec2) -> Self {
+    pub fn with_viewport(id_source: impl std::hash::Hash, tile_cache: &'a mut LruCache<(u32, u32, u32), MapTile>, vector_tile_cache: &'a mut LruCache<(u32, u32, u32), VectorTile>, missing_tiles: &'a mut Vec<(u32, u32, u32)>, runtime: Arc<tokio::runtime::Runtime>, viewport_size: Vec2) -> Self {
         Self {
             id: egui::Id::new(id_source),
             tile_cache,
             vector_tile_cache,
             viewport_size,
             missing_tiles,
+            runtime,
         }
     }
 
@@ -438,6 +422,237 @@ impl<'a> Map<'a> {
         } else {
             // Try the next parent level recursively
             self.fetch_parent_tile(parent_z, parent_x, parent_y, depth - 1, ui, tile_rect, uv)
+        }
+    }
+
+    fn get_vector_tile(&mut self, z: u32, x: u32, y: u32) -> Option<(&VectorTile, (u32, u32, u32))> {
+        // Attempt 3 iterations to fetch the tile or the tile above it. Always clamp z to 14
+        let z = z as i32;
+        let diff = (z - 14).max(0);
+        for i in 0..3 {
+            let shift = i + diff;
+            // Recalculate z, x, y (z = z-i, x = x/2^i, y = y/2^i)
+            let z = z - shift;
+            if z < 0 {
+                return None;
+            }
+            let z = z as u32;
+            let x = x >> shift;
+            let y = y >> shift;
+            if let Some(_) = self.vector_tile_cache.peek(&(z, x, y)) {
+                return self.vector_tile_cache.get(&(z, x, y)).map(|tile| (tile, (z, x, y)));
+            }
+        }
+        None
+    }
+
+    fn render_overlay(&mut self, ui: &egui::Ui, rect: Rect, view: &PixelBounds, map_painter: Arc<egui::Painter>) -> Vec<RenderedOverlay> {
+        let mut overlay_layers = HashSet::new();
+        for layer_name in vec!["place", "boundary", "water_name"] {
+            overlay_layers.insert(layer_name);
+        }
+
+        let mut join_handles: Vec<JoinHandle<RenderedOverlay>> = Vec::new();
+        let wrapped_rect = Arc::new(rect);
+        let wrapped_view = Arc::new(view.clone());
+
+        for (z, x, y, _, _) in &MapState::load(ui.ctx(), self.id).cached_view {
+            if let Some((tile, coords)) = self.get_vector_tile(*z, *x, *y) {
+                let boundaries = Arc::new(PixelBounds::from_x_y_zoom(coords.1, coords.2, coords.0));
+                for layer in tile.layers.clone().iter() { // Clone to avoid borrowing issues, using Arc for performance
+                    // Not a fan of this, but it works for now and shouldnt have a huge performance impact
+                    if !overlay_layers.contains(&layer.name.as_str()) {
+                        continue;
+                    }
+                    let min_rank = layer.get_lowest_rank();
+                    for feature in layer.features.iter() {
+                        // self.render_feature(&mut label_manager, rect, view, boundaries, feature, layer.get_lowest_rank(), &mut rendered_overlays, map_painter);
+                        let wrapped_rect = wrapped_rect.clone();
+                        let wrapped_view = wrapped_view.clone();
+                        let wrapped_painter = map_painter.clone();
+                        let wrapped_bounds = boundaries.clone();
+                        let wrapped_feature = feature.clone();
+                        let handle = self.runtime.spawn(async move {
+                            // Render the feature
+                            render_feature(
+                                wrapped_rect,
+                                wrapped_view,
+                                wrapped_bounds,
+                                wrapped_feature,
+                                min_rank,
+                                wrapped_painter,
+                            )
+                        });
+                        join_handles.push(handle);
+                    }
+                }
+            }
+        }
+
+        let results = self.runtime.block_on(async {
+            join_all(join_handles).await
+        });
+
+        results.into_iter().filter_map(|r| r.ok()).collect()
+    }
+}
+
+enum RenderedOverlay {
+    Point(LabelPoint),
+    Line(Shape),
+    Polygon(Shape),
+    None(),
+}
+
+fn render_feature(
+    viewport: Arc<Rect>,
+    view: Arc<PixelBounds>,
+    boundaries: Arc<PixelBounds>,
+    feature: Arc<VectorFeature>,
+    lowest_rank: i32,
+    map_painter: Arc<egui::Painter>,
+) -> RenderedOverlay {
+    match feature.geometry_type {
+        crate::map::vector_tile::GeometryType::Point => {
+            render_point(viewport, view, boundaries, feature, lowest_rank, map_painter)
+        }
+        crate::map::vector_tile::GeometryType::Line => {
+            //self.render_line(viewport, view, boundaries, feature, rendered_overlays, map_painter)
+            RenderedOverlay::None()
+        }
+        crate::map::vector_tile::GeometryType::Polygon => {
+            //self.render_polygon(viewport, view, boundaries, feature, rendered_overlays, map_painter)
+            // Ignore polygons until we've figured out lines
+            RenderedOverlay::None()
+        }
+    }
+}
+
+fn render_point(
+    viewport: Arc<Rect>,
+    view: Arc<PixelBounds>,
+    boundaries: Arc<PixelBounds>,
+    feature: Arc<VectorFeature>,
+    lowest_rank: i32,
+    map_painter: Arc<egui::Painter>,
+) -> RenderedOverlay {
+    let coordinates = feature.coordinates.iter().map(|c| {
+        let temp_coord = c.first().unwrap();
+        let pixel_x = boundaries.left() + boundaries.width() * temp_coord.0 as f64;
+        let pixel_y = boundaries.top() + boundaries.height() * temp_coord.1 as f64;
+        crate::map::map_tile::PixelCoordinate::new(pixel_x, pixel_y)
+    }).collect::<Vec<_>>();
+
+    if let Some(projected_point) = view.project_point(coordinates.first().unwrap()) {
+        if feature.get_rank() > lowest_rank {
+            return RenderedOverlay::None();
+        }
+
+        let paint_point = pos2(
+            viewport.min.x + projected_point.x() as f32 * viewport.width(),
+            viewport.min.y + projected_point.y() as f32 * viewport.height(),
+        );
+
+        let (font_size, color) = get_point_style(feature.get_class(), feature.get_rank());
+        let dynamic_font = egui::FontId::proportional(font_size);
+        // Layout the text here, before creating the LabelPoint
+        let layout = map_painter.layout(feature.get_name_lang("en").to_string(), dynamic_font, color, f32::MAX);
+        
+        let size = layout.size();
+
+        let label = LabelPoint {
+            position: paint_point - size / 2.0,
+            text: feature.get_name_lang("en").to_string(),
+            layout,
+            dimensions: size,
+            importance: 1.0,
+        };
+
+        return RenderedOverlay::Point(label);
+    }
+    RenderedOverlay::None()
+}
+
+fn render_line(
+    viewport: Arc<Rect>,
+    view: Arc<PixelBounds>,
+    boundaries: Arc<PixelBounds>,
+    feature: Arc<VectorFeature>,
+    map_painter: Arc<egui::Painter>,
+) -> RenderedOverlay {
+    let (stroke, color) = get_line_style(feature.get_class(), feature.get_rank());
+    let points: Vec<egui::Pos2> = feature.coordinates.iter().flatten().map(|(x, y)| {
+        let pixel_x = boundaries.left() + boundaries.width() * (*x as f64);
+        let pixel_y = boundaries.top() + boundaries.height() * (*y as f64);
+        pos2(viewport.min.x + pixel_x as f32 * viewport.width(), viewport.min.y + pixel_y as f32 * viewport.height())
+    }).collect();
+
+    if points.len() >= 2 {
+        let line = egui::Shape::line(points, Stroke::new(stroke, color));
+        return RenderedOverlay::Line(line);
+    }
+    RenderedOverlay::None()
+}
+
+fn render_polygon(
+    viewport: Arc<Rect>,
+    view: Arc<PixelBounds>,
+    boundaries: Arc<PixelBounds>,
+    feature: Arc<VectorFeature>,
+    map_painter: Arc<egui::Painter>,
+) -> RenderedOverlay {
+    let (fill, stroke_color) = get_polygon_style(feature.get_class(), feature.get_rank());
+    let points: Vec<egui::Pos2> = feature.coordinates.iter().flatten().map(|(x, y)| {
+        let pixel_x = boundaries.left() + boundaries.width() * (*x as f64);
+        let pixel_y = boundaries.top() + boundaries.height() * (*y as f64);
+        pos2(viewport.min.x + pixel_x as f32 * viewport.width(), viewport.min.y + pixel_y as f32 * viewport.height())
+    }).collect();
+
+    if !points.is_empty() {
+        let polygon = egui::Shape::convex_polygon(points, fill, Stroke::new(1.0, stroke_color));
+        return RenderedOverlay::Polygon(polygon);
+    }
+    RenderedOverlay::None()
+}
+
+fn get_point_style(class: &str, rank: i32) -> (f32, Color32) {
+    if class == "city" && rank < 5 {
+        (22.0, Color32::YELLOW)
+    } else {
+        (17.0, Color32::WHITE)
+    }
+}
+
+fn get_line_style(class: &str, rank: i32) -> (f32, Color32) {
+    if class == "road" && rank < 3 {
+        (2.0, Color32::LIGHT_BLUE)
+    } else {
+        (1.0, Color32::GRAY)
+    }
+}
+
+fn get_polygon_style(class: &str, rank: i32) -> (Color32, Color32) {
+    if class == "park" {
+        (Color32::GREEN, Color32::DARK_GREEN)
+    } else {
+        (Color32::from_gray(128), Color32::from_gray(60))
+    }
+}
+
+fn paint_overlay(ui: &mut egui::Ui, rect: Rect, rendered_overlays: Vec<RenderedOverlay>) {
+    let map_painter = ui.painter().with_clip_rect(rect);
+    for overlay in rendered_overlays {
+        match overlay {
+            RenderedOverlay::Point(label) => {
+                map_painter.galley(label.position, label.layout.clone(), Color32::WHITE);
+            }
+            RenderedOverlay::Line(line) => {
+                map_painter.add(line);
+            }
+            RenderedOverlay::Polygon(polygon) => {
+                map_painter.add(polygon);
+            }
+            RenderedOverlay::None() => {}
         }
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub enum GeometryType {
@@ -48,7 +48,7 @@ impl VectorFeature {
 #[derive(Debug, Clone)]
 pub struct VectorLayer {
     pub name: String,
-    pub features: Vec<VectorFeature>,
+    pub features: Vec<Arc<VectorFeature>>,
 }
 
 impl VectorLayer {
@@ -101,18 +101,35 @@ impl VectorLayer {
 
 #[derive(Debug, Clone)]
 pub struct VectorTile {
-    pub layers: Vec<VectorLayer>,
+    pub layers: Arc<Vec<VectorLayer>>,
 }
 
 impl VectorTile {
-    pub fn new() -> Self {
+    pub fn new(layers: Vec<VectorLayer>) -> Self {
         Self {
-            layers: Vec::new(),
+            layers: Arc::new(layers),
         }
     }
 
     pub fn get_all_layer_names(&self) -> Vec<&str> {
         self.layers.iter().map(|layer| layer.name.as_str()).collect()
+    }
+
+    pub fn get_layer_by_name(&self, name: &str) -> Option<&VectorLayer> {
+        for layer in self.layers.iter() {
+            if layer.name == name {
+                return Some(layer);
+            }
+        }
+        None
+    }
+
+    pub fn get_layer_by_index(&self, index: usize) -> Option<&VectorLayer> {
+        self.layers.get(index)
+    }
+
+    pub fn iter_layers(&self) -> std::slice::Iter<VectorLayer> {
+        self.layers.iter()
     }
 }
 

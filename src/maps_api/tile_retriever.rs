@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::io::Cursor;
+use std::sync::Arc;
 use geozero::mvt::tile::{Feature, GeomType, Layer, Value};
 use geozero::mvt::{Message, Tile, TileValue};
 use reqwest;
@@ -128,17 +129,17 @@ fn parse_vector_tile(data: Vec<u8>) -> Result<TileType, Box<dyn Error>> {
     let cursor = Cursor::new(data);
     let tile = Tile::decode(cursor).map_err(|e| format!("Geozero decode error: {}", e))?;
 
-    let mut vector_tile = VectorTile::new(); // Create your custom VectorTile
+    let mut vector_tile_layers = Vec::new();
 
     for layer in &tile.layers { // Iterate over geozero layers
         let vector_layer = parse_layer(layer)?; // Parse each layer
-        vector_tile.layers.push(vector_layer); // Add parsed layer to VectorTile
+        vector_tile_layers.push(vector_layer); // Add parsed layer to VectorTile
     }
 
     // For debugging purposes, write the vector tile as debug to a local file debug.txt
     // std::fs::write("debug/debug.txt", format!("{:#?}", vector_tile)).expect("Unable to write file");
 
-    Ok(TileType::Vector(vector_tile))
+    Ok(TileType::Vector(VectorTile::new(vector_tile_layers)))
 }
 
 fn parse_layer(layer: &Layer) -> Result<VectorLayer, Box<dyn Error>> {
@@ -148,7 +149,7 @@ fn parse_layer(layer: &Layer) -> Result<VectorLayer, Box<dyn Error>> {
     };
 
     for feature in &layer.features { // Iterate over geozero features in the layer
-        let vector_feature = parse_feature(feature, layer.extent(), layer)?; // Parse each feature, passing layer extent
+        let vector_feature = Arc::new(parse_feature(feature, layer.extent(), layer)?); // Parse each feature, passing layer extent
         vector_layer.features.push(vector_feature); // Add parsed feature to VectorLayer
     }
 
@@ -365,7 +366,7 @@ mod tests {
         let ctx = egui::Context::default();
         let tile_retriever = TileRetriever::new("your_test_token".to_string(), 512, ctx);
         
-        let result = tile_retriever.fetch_vector_tile(14, 8375, 5500).await;
+        let result = tile_retriever.fetch_vector_tile(1, 0, 0).await;
         assert!(result.is_ok(), "Failed to fetch vector tile: {:?}", result.err());
         
         if let Ok(TileType::Vector(vector_tile)) = result {

@@ -35,6 +35,9 @@ Tripsavvy is an interactive mapping application written in Rust. It features a z
    ![Raster using horizontal wrapping](assets/Unstyled_Wrapping.png)
    (Wrapping occurs between Russia and Alaska, allowing seamless navigation)
 
+ - **Raster with a simple overlay**  
+   ![Raster with a simple overlay](assets/Basic_Styled_Raster.png)
+
 ## Project Intent
 
 - **Interactive Map Experience:**  
@@ -43,8 +46,11 @@ Tripsavvy is an interactive mapping application written in Rust. It features a z
 - **Tile-Based Rendering:**  
   Raster tiles are used to render map backgrounds. The map handles missing tiles by attempting to fetch a parent tile ([`Map::fetch_parent_tile`](src/map/map.rs)) for visual continuity.
 
+- **OSM Vector Tile Overlay:**  
+  Vector tiles based on OpenStreetMap data can be overlaid on the raster map for a more detailed exploration, including borders, countries, cities, and other geographical features.
+
 - **Future Extensions:**  
-  While the current implementation focuses on raster tiles, integrating geo metadata (such as city labels and location details) via the Mapbox API is a planned enhancement. This could involve switching to or overlaying vector tiles and utilizing Mapbox’s Geocoding API.
+  Implementing a secondary widget, map settings, to control the map's appearance, behaviour, and overlay data, as well as navigation to specific locations.
 
 ## Current Implementations
 

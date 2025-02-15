@@ -629,7 +629,7 @@ fn get_point_style(class: &str, rank: i32, zoom: &f32) -> Option<(f32, Color32)>
     let style = match class {
         "continent" => PointStyle {
             font_size: 32.0,
-            color: Color32::from_rgb(76, 133, 119), 
+            color: Color32::from_rgb(244, 0, 34), 
             min_zoom: 0.0,
             max_zoom: 6.0,
             zoom_scaling: 0.8,

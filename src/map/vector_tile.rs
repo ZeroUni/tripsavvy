@@ -10,7 +10,7 @@ pub enum GeometryType {
 #[derive(Debug, Clone)]
 pub struct VectorFeature {
     pub geometry_type: GeometryType,
-    pub coordinates: Vec<Vec<(f32, f32)>>,
+    pub coordinates: Arc<[Arc<[(f32, f32)]>]>,
     pub properties: HashMap<String, FeatureValue>,
 }
 
@@ -41,6 +41,20 @@ impl VectorFeature {
         match self.properties.get("rank") {
             Some(FeatureValue::Sint(rank)) => *rank,
             _ => 0,
+        }
+    }
+
+    pub fn get_admin_level(&self) -> i32 {
+        match self.properties.get("admin_level") {
+            Some(FeatureValue::Sint(admin_level)) => *admin_level,
+            _ => 0,
+        }
+    }
+
+    pub fn get_maritime(&self) -> bool {
+        match self.properties.get("maritime") {
+            Some(FeatureValue::Sint(maritime)) => *maritime != 0,
+            _ => false,
         }
     }
 }

@@ -165,7 +165,7 @@ fn parse_feature(feature: &Feature, extent: u32, layer: &Layer) -> Result<Vector
         _ => return Err(format!("Unsupported geometry type: {:?}", feature.r#type()).into()), // Handle other types if needed
     };
 
-    let mut coordinates: Vec<Vec<(f32, f32)>> = Vec::new();
+    // let mut coordinates: Vec<Arc<Vec<(f32, f32)>>> = Vec::new();
     
     // Create a geometry processor
     struct GeomProcessor {
@@ -269,7 +269,10 @@ fn parse_feature(feature: &Feature, extent: u32, layer: &Layer) -> Result<Vector
 
     // Process the geometry
     feature.process_geom(&mut processor)?;
-    coordinates = processor.coordinates;
+    // coordinates = processor.coordinates;
+    // Convert coordinates from Vec<Vec<(f32, f32)>> to Arc<[Arc<[(f32, f32)]>]>
+    let coordinates: Arc<[Arc<[(f32, f32)]>]> = Arc::from(processor.coordinates.into_iter().map(|v| Arc::from(v.into_boxed_slice())).collect::<Vec<_>>().into_boxed_slice());
+
 
     // Extract properties
     let mut properties = HashMap::new();
@@ -366,13 +369,16 @@ mod tests {
         let ctx = egui::Context::default();
         let tile_retriever = TileRetriever::new("your_test_token".to_string(), 512, ctx);
         
-        let result = tile_retriever.fetch_vector_tile(1, 0, 0).await;
+        let result = tile_retriever.fetch_vector_tile(9, 137, 184).await;
         assert!(result.is_ok(), "Failed to fetch vector tile: {:?}", result.err());
         
         if let Ok(TileType::Vector(vector_tile)) = result {
             assert!(!vector_tile.layers.is_empty(), "Vector tile should contain layers");
             let layer_names = vector_tile.get_all_layer_names();
             println!("Layer names: {:?}", layer_names);
+
+            // Write the debug info of the vector tile to target/debug/debug.txt
+            std::fs::write("target/debug/debug.txt", format!("{:#?}", vector_tile)).expect("Unable to write file");
         } else {
             panic!("Expected Vector tile type");
         }

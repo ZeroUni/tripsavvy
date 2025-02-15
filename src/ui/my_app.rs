@@ -134,7 +134,7 @@ impl eframe::App for MyApp {
                     ui.style_mut().debug.debug_on_hover = false;
 
                     let mut missing_tiles = Vec::new();
-                    let map = Map::new("interactible_map", &mut self.memory, &mut self.memory_overlay, &mut missing_tiles, self.runtime.clone()).viewport_size(egui::vec2(780.0, 780.0));
+                    let map = Map::new("interactible_map", &mut self.memory, &mut self.memory_overlay, &mut missing_tiles).viewport_size(egui::vec2(780.0, 780.0));
                     
                     ui.add(map);
 
@@ -142,36 +142,7 @@ impl eframe::App for MyApp {
                     for (z, x, y) in missing_tiles {
                         // Check if we need to fetch the tile, or are waiting for it
                         if !self.pending_tiles.contains(&(z, x, y)) && self.memory.peek(&(z, x, y)).is_none() {
-                            let sender = self.sender.clone();
-                            let tile_retriever = self.tile_retriever.clone();
-                            let requester = ctx.clone(); // Uses ARC so can be cloned to a new thread cheaply
-
-                            // TEMP add a secondary fetcher for vector tiles
-                            let vector_retriever = tile_retriever.clone();
-                            let vector_sender = self.sender.clone();
-                            let vector_requester = requester.clone();
-                            
-                            self.runtime.spawn(async move {
-                                println!("Fetching tile ({}, {}, {})", x, y, z);
-                                let result = tile_retriever.fetch_tile(z, x, y).await
-                                    .map_err(|e| -> Box<dyn Error + Send + Sync> {
-                                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                                    });
-                                sender.send((x, y, z, result)).unwrap();
-                                requester.request_repaint();
-                            });
-
-                            self.runtime.spawn( async move {
-                                let result = vector_retriever.fetch_vector_tile(z, x, y).await
-                                    .map_err(|e| -> Box<dyn Error + Send + Sync> {
-                                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                                    });
-
-                                vector_sender.send((x, y, z, result)).unwrap();
-                                vector_requester.request_repaint();
-                            });
-                            
-                            self.pending_tiles.insert((z, x, y));
+                            self.request_tiles(ctx, x, y, z);
                         }
                     }
                 });
@@ -224,6 +195,38 @@ impl MyApp {
 
     pub fn from_storage(storage: &mut dyn eframe::Storage) -> Self {
         eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default()
+    }
+
+    fn request_tiles(&mut self, ctx: &egui::Context, x: u32, y: u32, z: u32) {
+        let sender = self.sender.clone();
+        let tile_retriever = self.tile_retriever.clone();
+        let requester = ctx.clone(); // Uses ARC so can be cloned to a new thread cheaply
+
+        let vector_retriever = tile_retriever.clone();
+        let vector_sender = self.sender.clone();
+        let vector_requester = requester.clone();
+        
+        self.runtime.spawn(async move {
+            println!("Fetching tile ({}, {}, {})", x, y, z);
+            let result = tile_retriever.fetch_tile(z, x, y).await
+                .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                });
+            sender.send((x, y, z, result)).unwrap();
+            requester.request_repaint();
+        });
+
+        self.runtime.spawn( async move {
+            let result = vector_retriever.fetch_vector_tile(z, x, y).await
+                .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                });
+
+            vector_sender.send((x, y, z, result)).unwrap();
+            vector_requester.request_repaint();
+        });
+        
+        self.pending_tiles.insert((z, x, y));
     }
 
     pub fn get_dark_theme_style(ctx: &egui::Context) -> Style {

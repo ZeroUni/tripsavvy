@@ -862,6 +862,151 @@ impl PixelBounds {
             None
         }
     }
+
+    pub fn force_project_point(&self, point: &PixelCoordinate) -> PixelCoordinate {
+        /// Project a point in normal space to this space, wrapping around the bounds if necessary
+        match self.wrapping() {
+            (false, false) => {
+                // Normal case
+                let x = (point.x() - self.left) / self.width();
+                let y = (point.y() - self.top) / self.height();
+                PixelCoordinate::new(x, y)
+            },
+            (true, false) => {
+                // Horizontal wrapping
+                let x = if point.x() < self.left {
+                    (point.x() + 1.0 - self.left) / self.width()
+                } else {
+                    (point.x() - self.left) / self.width()
+                };
+                let y = (point.y() - self.top) / self.height();
+                PixelCoordinate::new(x, y)
+            },
+            (false, true) => {
+                // Vertical wrapping
+                let x = (point.x() - self.left) / self.width();
+                let y = if point.y() < self.top {
+                    (point.y() + 1.0 - self.top) / self.height()
+                } else {
+                    (point.y() - self.top) / self.height()
+                };
+                PixelCoordinate::new(x, y)
+            },
+            (true, true) => {
+                // Both wrapping
+                let x = if point.x() < self.left {
+                    (point.x() + 1.0 - self.left) / self.width()
+                } else {
+                    (point.x() - self.left) / self.width()
+                };
+                let y = if point.y() < self.top {
+                    (point.y() + 1.0 - self.top) / self.height()
+                } else {
+                    (point.y() - self.top) / self.height()
+                };
+                PixelCoordinate::new(x, y)
+            },
+        }
+    }
+
+    pub fn project_line(&self, points: &Vec<PixelCoordinate>) -> Vec<Vec<PixelCoordinate>> {
+        let mut line_segments = Vec::new();
+        let mut current_segment = Vec::new();
+        
+        for i in 0..points.len() {
+            let current = &points[i];
+            
+            // Handle first point
+            if i == 0 {
+                if let Some(projected) = self.project_point(current) {
+                    current_segment.push(projected);
+                }
+                continue;
+            }
+            
+            let previous = &points[i - 1];
+            
+            // Check if we need to handle wrapping/breaking between previous and current point
+            let dx = current.x() - previous.x();
+            let dy = current.y() - previous.y();
+            
+            // Detect wrapping (when distance is greater than 0.5 in either direction)
+            let wraps_horizontally = dx.abs() > 0.5;
+            let wraps_vertically = dy.abs() > 0.5;
+            
+            if wraps_horizontally || wraps_vertically {
+                // Calculate intersection points with borders
+                if wraps_horizontally {
+                    // Add border point where line exits
+                    let exit_x = if dx > 0.0 { 1.0 } else { 0.0 };
+                    let t = (exit_x - previous.x()) / dx;
+                    let exit_y = previous.y() + t * dy;
+                    let exit_point = PixelCoordinate::new(exit_x, exit_y);
+                    
+                    if let Some(projected) = self.project_point(&exit_point) {
+                        current_segment.push(projected);
+                    }
+                    
+                    // Start new segment from wrapped entry point
+                    if !current_segment.is_empty() {
+                        line_segments.push(current_segment);
+                        current_segment = Vec::new();
+                    }
+                    
+                    // Add entry point
+                    let entry_x = if dx > 0.0 { 0.0 } else { 1.0 };
+                    let entry_point = PixelCoordinate::new(entry_x, exit_y);
+                    if let Some(projected) = self.project_point(&entry_point) {
+                        current_segment.push(projected);
+                    }
+                }
+                
+                if wraps_vertically {
+                    // Similar logic for vertical wrapping
+                    let exit_y = if dy > 0.0 { 1.0 } else { 0.0 };
+                    let t = (exit_y - previous.y()) / dy;
+                    let exit_x = previous.x() + t * dx;
+                    let exit_point = PixelCoordinate::new(exit_x, exit_y);
+                    
+                    if let Some(projected) = self.project_point(&exit_point) {
+                        current_segment.push(projected);
+                    }
+                    
+                    // Start new segment
+                    if !current_segment.is_empty() {
+                        line_segments.push(current_segment);
+                        current_segment = Vec::new();
+                    }
+                    
+                    // Add entry point
+                    let entry_y = if dy > 0.0 { 0.0 } else { 1.0 };
+                    let entry_point = PixelCoordinate::new(exit_x, entry_y);
+                    if let Some(projected) = self.project_point(&entry_point) {
+                        current_segment.push(projected);
+                    }
+                }
+            }
+            
+            // Add current point if it projects
+            if let Some(projected) = self.project_point(current) {
+                current_segment.push(projected);
+            } else if !current_segment.is_empty() {
+                // Point is outside bounds, end current segment
+                line_segments.push(current_segment);
+                current_segment = Vec::new();
+            }
+        }
+        
+        // Add final segment if not empty
+        if !current_segment.is_empty() {
+            line_segments.push(current_segment);
+        }
+        
+        // Filter out segments with less than 2 points
+        line_segments.into_iter()
+            .filter(|segment| segment.len() >= 2)
+            .collect()
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

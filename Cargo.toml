@@ -17,6 +17,7 @@ geozero = { version = "0.14.0", features = ["with-mvt"] }
 image = { version = "0.25.5", features = ["webp"] }
 lru = "0.13.0"
 protobuf = "3.7.1"
+rayon = "1.10.0"
 reqwest = "0.12.12"
 rstar = { version = "0.12.2", features = ["debug", "serde"] }
 serde = "1.0.217"
